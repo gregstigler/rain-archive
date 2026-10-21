@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Rain Archive</title>
+  <meta name="description" content="Past rain totals and weather history for any place, from Open-Meteo historical data.">
+  <meta name="theme-color" content="#1f6fd1">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="css/app.css">
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js" defer></script>
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="icons/icon.svg" alt="" width="26" height="26">
+      <h1>Rain Archive</h1>
+    </div>
+    <nav class="tabs" aria-label="Settings">
+      <button type="button" class="tab" data-panel="card-location" aria-expanded="false">
+        <span class="tab-name">📍 Location</span><span class="tab-val" id="tab-location">–</span>
+      </button>
+      <button type="button" class="tab" data-panel="card-period" aria-expanded="false">
+        <span class="tab-name">🕒 Period</span><span class="tab-val" id="tab-period">–</span>
+      </button>
+      <button type="button" class="tab" data-panel="card-data" aria-expanded="false">
+        <span class="tab-name">📊 Data</span><span class="tab-val" id="tab-data">–</span>
+      </button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- Location -->
+    <section class="card panel" id="card-location" hidden>
+      <div class="search">
+        <input id="search" type="search" placeholder="Search a place…" autocomplete="off" enterkeyhint="search" aria-label="Search a place">
+        <ul id="search-results" class="results" hidden></ul>
+      </div>
+      <div class="row buttons">
+        <button type="button" id="btn-gps" class="btn">📍 My position</button>
+        <button type="button" id="btn-map" class="btn">🗺️ Pick on map</button>
+        <button type="button" id="btn-fav" class="btn" disabled>☆ Save</button>
+      </div>
+      <div id="loc-info" class="loc-info muted">No location selected.</div>
+      <div id="favorites" class="chips"></div>
+    </section>
+
+    <!-- Period -->
+    <section class="card panel" id="card-period" hidden>
+      <label class="field first">
+        <span>Show</span>
+        <select id="preset">
+          <option value="6">Last 6 hours</option>
+          <option value="12">Last 12 hours</option>
+          <option value="24">Last 1 day</option>
+          <option value="48">Last 2 days</option>
+          <option value="72">Last 3 days</option>
+          <option value="other">Other…</option>
+        </select>
+      </label>
+
+      <div id="other" hidden>
+        <div class="seg" role="radiogroup" aria-label="Period type">
+          <label><input type="radio" name="other-mode" value="end" checked><span>End date + duration</span></label>
+          <label><input type="radio" name="other-mode" value="range"><span>Date range</span></label>
+        </div>
+
+        <div id="mode-end">
+          <label class="field">
+            <span>End</span>
+            <input id="end" type="datetime-local" step="3600">
+          </label>
+          <div class="field">
+            <span>Duration</span>
+            <div class="row">
+              <input id="qty" type="number" min="1" step="1" value="7" inputmode="numeric" aria-label="Duration amount">
+              <select id="qty-unit" aria-label="Duration unit">
+                <option value="h">hours</option>
+                <option value="d" selected>days</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div id="mode-range" hidden>
+          <label class="field">
+            <span>From</span>
+            <input id="range-start" type="datetime-local" step="3600">
+          </label>
+          <label class="field">
+            <span>To</span>
+            <input id="range-end" type="datetime-local" step="3600">
+          </label>
+        </div>
+      </div>
+      <p id="period-summary" class="muted small"></p>
+    </section>
+
+    <!-- Data -->
+    <section class="card panel" id="card-data" hidden>
+      <div id="quick-vars" class="checks"></div>
+      <details id="other-vars">
+        <summary>Other variables <span id="other-count" class="badge" hidden></span></summary>
+        <input id="var-filter" type="search" placeholder="Filter variables…" aria-label="Filter variables">
+        <div id="var-list"></div>
+      </details>
+
+      <label class="field">
+        <span>Values</span>
+        <select id="agg">
+          <option value="total">Sum / mean over whole period (1 value)</option>
+          <option value="day">Sum / mean per day</option>
+          <option value="hour" selected>Sum / mean per hour</option>
+        </select>
+      </label>
+
+      <details id="units-box">
+        <summary>Units</summary>
+        <div id="units"></div>
+      </details>
+
+      <details id="advanced">
+        <summary>Advanced: data source</summary>
+        <label class="field">
+          <span>Model</span>
+          <select id="model"></select>
+        </label>
+        <p id="model-note" class="muted small"></p>
+      </details>
+    </section>
+
+    <!-- Results -->
+    <section class="card" id="card-results">
+      <div class="row results-head">
+        <div id="view-btns" class="view-btns" role="group" aria-label="Chart time window" hidden>
+          <button type="button" class="btn small" data-view="period">Period</button>
+          <button type="button" class="btn small" data-view="24">1 d</button>
+          <button type="button" class="btn small" data-view="72">3 d</button>
+          <button type="button" class="btn small" data-view="168">1 w</button>
+        </div>
+        <div class="row">
+          <button type="button" id="btn-chart-mode" class="btn small" hidden>Combined</button>
+          <button type="button" id="btn-refresh" class="btn small primary" aria-label="Refresh">↻</button>
+        </div>
+      </div>
+      <div id="status" class="status" role="status"></div>
+      <div id="charts"></div>
+      <p id="model-used" class="small"></p>
+      <p id="chart-hint" class="muted small" hidden>Tap or hover the chart for values. Pinch / mouse wheel to zoom, drag to move in time. Reaching the left end loads earlier data.</p>
+      <p id="source-note" class="muted small"></p>
+    </section>
+  </main>
+
+  <footer class="muted small">
+    Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo.com</a> (CC BY 4.0) ·
+    Place names © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors
+  </footer>
+
+  <dialog id="map-dialog">
+    <div class="dialog-head">
+      <strong>Tap the map to pick a point</strong>
+      <button type="button" class="btn small" id="map-close" aria-label="Close">✕</button>
+    </div>
+    <div id="map"></div>
+    <div class="dialog-foot">
+      <span id="map-picked" class="muted small">No point selected.</span>
+      <button type="button" class="btn primary" id="map-use" disabled>Use this point</button>
+    </div>
+  </dialog>
+</body>
+</html>
