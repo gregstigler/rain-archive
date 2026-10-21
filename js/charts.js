@@ -1,6 +1,6 @@
 // ECharts rendering: one synced chart per variable ("stacked") or a single multi-axis chart ("combined").
-import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=5';
-import { fmtWall } from './data.js?v=5';
+import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=6';
+import { fmtWall } from './data.js?v=6';
 
 const PALETTE = ['#2f7fd8', '#e8743b', '#19a979', '#945ecf', '#d4526e', '#13a4b4', '#ce8f1f', '#6b7a8f'];
 const GROUP = 'rain-archive';
@@ -9,6 +9,59 @@ let instances = [];
 function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
 const colorFor = (keys, k) => PALETTE[keys.indexOf(k) % PALETTE.length];
+
+const IS_TOUCH = matchMedia('(pointer: coarse)').matches;
+const PINCH_TOLERANCE = 0.15; // finger spacing may change ±15 % during a two-finger pan
+
+/**
+ * Two-finger gestures on a chart: moving both fingers pans the time window; spreading or
+ * pinching them (beyond the tolerance) zooms around their midpoint. One finger is left to
+ * ECharts, which shows the tooltip under the finger as a tap would.
+ */
+function attachTouch(chart, el, min, max, minSpan) {
+  let g = null;
+  const mid = (t) => (t[0].clientX + t[1].clientX) / 2;
+  const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  el.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 2) { g = null; return; }
+    const dz = chart.getOption().dataZoom[0];
+    const rect = chart.getModel().getComponent('grid').coordinateSystem.getRect();
+    const box = el.getBoundingClientRect();
+    g = {
+      s: min + (dz.start / 100) * (max - min), e: min + (dz.end / 100) * (max - min),
+      m0: mid(e.touches), d0: dist(e.touches), left: box.left + rect.x, width: rect.width, mode: null,
+    };
+    chart.dispatchAction({ type: 'hideTip' });
+  }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    if (!g || e.touches.length !== 2) return;
+    e.preventDefault();
+    const ratio = dist(e.touches) / g.d0;
+    const dx = mid(e.touches) - g.m0;
+    if (!g.mode) {
+      if (Math.abs(ratio - 1) > PINCH_TOLERANCE) g.mode = 'zoom';
+      else if (Math.abs(dx) > 8) g.mode = 'pan';
+      else return;
+    }
+    const span = g.e - g.s;
+    const perPx = span / g.width;
+    let s, en;
+    if (g.mode === 'pan') {
+      s = g.s - dx * perPx;
+      en = g.e - dx * perPx;
+    } else {
+      const anchor = g.s + (g.m0 - g.left) * perPx; // time under the fingers at the start
+      const newSpan = Math.min(max - min, Math.max(minSpan, span / ratio));
+      const frac = (g.m0 - g.left) / g.width;
+      s = anchor - frac * newSpan + -dx * (newSpan / g.width);
+      en = s + newSpan;
+    }
+    if (s < min) { en += min - s; s = min; }
+    if (en > max) { s -= en - max; en = max; }
+    chart.dispatchAction({ type: 'dataZoom', startValue: Math.max(min, s), endValue: en });
+  }, { passive: false });
+  el.addEventListener('touchend', (e) => { if (e.touches.length < 2) g = null; }, { passive: true });
+}
 
 // Title line: "● Rain (total 14.2 mm)" with an optional detail line. t = {agg, value, extra}.
 function titleEl(key, color, t) {
@@ -120,7 +173,8 @@ function baseOption(x, gran, theme, tooltipFmt, showSlider, gridRight, gridLeft,
       splitLine: { show: false },
     },
     dataZoom: [
-      { type: 'inside', id: 'dz-in', xAxisIndex: 0, filterMode, zoomOnMouseWheel: true, moveOnMouseMove: true, minValueSpan: gran === 'day' ? step : step * 3, ...win },
+      // Touch screens: built-in drag/pinch off; one finger shows values, two fingers pan/zoom (attachTouch).
+      { type: 'inside', id: 'dz-in', xAxisIndex: 0, filterMode, disabled: IS_TOUCH, zoomOnMouseWheel: true, moveOnMouseMove: true, minValueSpan: gran === 'day' ? step : step * 3, ...win },
       { type: 'slider', id: 'dz-sl', xAxisIndex: 0, filterMode, show: showSlider, height: 22, bottom: 10, ...win,
         borderColor: theme.line, textStyle: { color: theme.muted, fontSize: 10 }, labelFormatter: (ms) => fmtWall(ms, gran === 'hour', false) },
     ],
@@ -146,6 +200,7 @@ export function renderCharts(container, agg, keys, gran, mode, opts = {}) {
   const color = (k) => colorFor(keys, k);
   const titles = opts.titles || {};
   const { min, max } = axisRange(x, gran);
+  const minSpan = gran === 'day' ? 86400e3 : 3 * 3600e3;
   const zoom = opts.zoom;
   const listen = (chart) => {
     if (!opts.onZoom) return;
@@ -204,6 +259,7 @@ export function renderCharts(container, agg, keys, gran, mode, opts = {}) {
     const chart = echarts.init(el, null, { renderer: 'canvas' });
     chart.setOption(opt);
     listen(chart);
+    if (IS_TOUCH) attachTouch(chart, el, min, max, minSpan);
     instances.push(chart);
     return;
   }
@@ -227,6 +283,7 @@ export function renderCharts(container, agg, keys, gran, mode, opts = {}) {
     chart.setOption(opt);
     chart.group = GROUP;
     if (n === 0) listen(chart); // connected charts zoom together; one listener is enough
+    if (IS_TOUCH) attachTouch(chart, el, min, max, minSpan);
     instances.push(chart);
   });
   echarts.connect(GROUP);

@@ -1,11 +1,12 @@
 import {
   VARS, VAR_BY_KEY, QUICK_VARS, FAMILIES, MODELS, IFS_FROM, pre2017Source, defaultUnits, decimals, wmoLabel, compass,
-} from './vars.js?v=5';
+} from './vars.js?v=6';
 import {
   HOUR, searchPlaces, resolvePoint, getElevation, fetchHourly, aggregate,
   zonedToUnix, unixToZonedInput, floorLocalHour, wallMs, fmtWall, fmtDuration,
-} from './data.js?v=5';
-import { renderCharts, disposeCharts, resizeCharts } from './charts.js?v=5';
+  DURATION_UNITS, subtractDuration, bestDuration,
+} from './data.js?v=6';
+import { renderCharts, disposeCharts, resizeCharts } from './charts.js?v=6';
 
 const $ = (id) => document.getElementById(id);
 const STORE_KEY = 'rain-archive-state';
@@ -78,13 +79,14 @@ function updateTabs() {
   $('tab-location').textContent = state.loc ? state.loc.name : 'Choose…';
   const w = computeWindow();
   let p;
-  if (state.otherMode === 'end' && state.endNow) p = `Last ${state.qty} ${state.qtyUnit === 'd' ? 'd' : 'h'}`;
+  const dur = `${state.qty} ${DURATION_UNITS[state.qtyUnit] || state.qtyUnit}`;
+  if (state.otherMode === 'end' && state.endNow) p = `Last ${dur}`;
   else if (w.error) p = 'Incomplete';
   else {
     const z = tz();
     const sameYear = new Date(wallMs(w.S, z)).getUTCFullYear() === new Date(wallMs(w.E, z)).getUTCFullYear();
     p = state.otherMode === 'end'
-      ? `${state.qty} ${state.qtyUnit === 'd' ? 'd' : 'h'} → ${fmtWall(wallMs(w.E, z), false).slice(4)}`
+      ? `${dur} → ${fmtWall(wallMs(w.E, z), false).slice(4)}`
       : `${fmtWall(wallMs(w.S, z), false, !sameYear).slice(4)} → ${fmtWall(wallMs(w.E, z), false).slice(4)}`;
   }
   $('tab-period').textContent = p;
@@ -285,7 +287,7 @@ function computeWindow() {
     const q = Math.floor(Number(state.qty));
     if (E == null) return { error: 'Choose an end date and time.' };
     if (!(q >= 1)) return { error: 'Duration must be at least 1.' };
-    S = E - q * (state.qtyUnit === 'd' ? 24 : 1) * HOUR;
+    S = subtractDuration(E, q, state.qtyUnit, z);
   } else {
     S = zonedToUnix(state.rangeStart, z);
     E = zonedToUnix(state.rangeEnd, z);
@@ -346,9 +348,9 @@ function convertOtherMode(to) {
     const S = zonedToUnix(state.rangeStart, z), E = zonedToUnix(state.rangeEnd, z);
     if (E != null) { state.end = state.rangeEnd; state.endNow = E >= nowHour(); }
     if (S != null && E != null && E > S) {
-      const hours = Math.max(1, Math.round((E - S) / HOUR));
-      if (hours % 24 === 0) { state.qty = hours / 24; state.qtyUnit = 'd'; }
-      else { state.qty = hours; state.qtyUnit = 'h'; }
+      const d = bestDuration(S, E, z);
+      state.qty = d.qty;
+      state.qtyUnit = d.unit;
     }
   }
 }
@@ -492,6 +494,7 @@ async function doFetch() {
   try {
     raw = await fetchHourly({ loc: state.loc, keys: [...state.vars], startSec: w.S, endSec: w.E, model: state.model, signal: fetchAbort.signal });
     raw.loadedS = w.S;
+    raw.loadedE = w.E;
     rawWindow = w;
     zoomWin = null;
     setActiveView('period');
@@ -540,7 +543,38 @@ async function loadEarlierTo(S1) {
   } finally { loadingEarlier = false; }
 }
 
-// View buttons: show the whole period, or the last N hours up to the period end.
+// Extend loaded data forward to E1 (the "Up to now" view). When the gap after the loaded data
+// is large, only (from, E1] is fetched and a null point breaks the curves across the gap.
+let loadingLater = false;
+async function loadLaterTo(E1, from) {
+  if (loadingLater || !raw) return false;
+  const target = raw;
+  const E0 = target.loadedE;
+  if (E1 - E0 < HOUR) return false;
+  const start = Math.max(E0, floorLocalHour(from, target.tz));
+  loadingLater = true;
+  setStatus('Loading recent data…', 'loading');
+  try {
+    const next = await fetchHourly({ loc: state.loc, keys: Object.keys(target.values), startSec: start, endSec: E1, model: target.model, signal: fetchAbort?.signal });
+    if (raw !== target) return false;
+    if (start - E0 > HOUR && next.times.length) {
+      target.times.push(E0 + HOUR);
+      for (const k of Object.keys(target.values)) target.values[k].push(null);
+    }
+    target.times = target.times.concat(next.times);
+    for (const k of Object.keys(target.values)) target.values[k] = target.values[k].concat(next.values[k]);
+    target.filledHours += next.filledHours;
+    target.loadedE = E1;
+    setStatus('');
+    return true;
+  } catch (e) {
+    if (e.name !== 'AbortError') setStatus(`Could not load recent data: ${e.message}`, 'error');
+    return false;
+  } finally { loadingLater = false; }
+}
+
+// View buttons: the whole period; "now": the current visible length ending now (the saved period is
+// not changed); 1 d…1 m: the last N hours/days of the loaded data.
 let activeView = null;
 let lastX = [];
 function setActiveView(v) {
@@ -551,27 +585,39 @@ function setActiveView(v) {
 // Number of buckets a view shows: N hours = N hourly bars, or N/24 daily bars (the last day may be partial).
 const viewBuckets = (view) => (state.agg === 'day' ? Math.max(1, Math.round(Number(view) / 24)) : Number(view));
 
-function viewWindow(view) {
+function viewWindow(view, spanMs) {
   const step = state.agg === 'day' ? 86400e3 : 3600e3;
-  let first;
+  const endMs = lastX[lastX.length - 1] + step / 2;
+  if (view === 'now') return { startMs: endMs - spanMs, endMs };
   if (view === 'period') {
-    // First bucket of the period: hourly stamps after S, or the day containing S + 1 h.
-    const from = wallMs(rawWindow.S, raw.tz) - (state.agg === 'day' ? 86400e3 - 3600e3 : 0);
-    first = lastX.find((x) => x > from) ?? lastX[0];
-  } else {
-    first = lastX[Math.max(0, lastX.length - viewBuckets(view))];
+    // Buckets of the period: hourly stamps in (S, E], or the days containing them.
+    const dayShift = state.agg === 'day' ? 86400e3 - 3600e3 : 0;
+    const from = wallMs(rawWindow.S, raw.tz) - dayShift;
+    const to = wallMs(rawWindow.E, raw.tz);
+    const first = lastX.find((x) => x > from) ?? lastX[0];
+    const last = [...lastX].reverse().find((x) => x <= to) ?? lastX[lastX.length - 1];
+    return { startMs: first - step / 2, endMs: last + step / 2 };
   }
-  return { startMs: first - step / 2, endMs: lastX[lastX.length - 1] + step / 2 };
+  const first = lastX[Math.max(0, lastX.length - viewBuckets(view))];
+  return { startMs: first - step / 2, endMs };
 }
 
 async function applyView(view) {
   setActiveView(view);
+  const stepSec = state.agg === 'day' ? 86400 : HOUR;
+  let spanMs = 0;
+  if (view === 'now') {
+    spanMs = zoomWin ? zoomWin.endMs - zoomWin.startMs : (rawWindow.E - rawWindow.S) * 1000 + stepSec * 1000;
+    const now = floorLocalHour(Date.now() / 1000, raw.tz);
+    await loadLaterTo(now, now - spanMs / 1000);
+  }
   const S = view === 'period' ? rawWindow.S
-    : rawWindow.E - viewBuckets(view) * (state.agg === 'day' ? 86400 : HOUR);
+    : view === 'now' ? raw.loadedE - spanMs / 1000
+    : raw.loadedE - viewBuckets(view) * stepSec;
   if (S < raw.loadedS) await loadEarlierTo(S);
   if (activeView !== view) return; // user moved on meanwhile
   renderResults(); // refreshes lastX for the current time step
-  zoomWin = viewWindow(view);
+  zoomWin = viewWindow(view, spanMs);
   renderResults();
   setActiveView(view);
 }
@@ -582,9 +628,9 @@ document.querySelectorAll('#view-btns button').forEach((b) => {
 
 // Data restricted to the selected period (titles ignore earlier data loaded by panning).
 function periodRaw() {
-  const i = raw.times.findIndex((t) => t > rawWindow.S);
-  const from = i < 0 ? raw.times.length : i;
-  return { ...raw, times: raw.times.slice(from), values: Object.fromEntries(Object.entries(raw.values).map(([k, v]) => [k, v.slice(from)])) };
+  const idx = [];
+  raw.times.forEach((t, i) => { if (t > rawWindow.S && t <= rawWindow.E) idx.push(i); });
+  return { ...raw, times: idx.map((i) => raw.times[i]), values: Object.fromEntries(Object.entries(raw.values).map(([k, v]) => [k, idx.map((i) => v[i])])) };
 }
 
 // Which model(s) produced the data, spelled out for "Auto".
@@ -677,6 +723,7 @@ function renderResults() {
   $('model-used').textContent = modelUsedText(keys, raw.loadedS, rawWindow.E);
   let note = `Period: ${fmtWall(wallMs(rawWindow.S, z))} → ${fmtWall(wallMs(rawWindow.E, z))} (${z}).`;
   if (raw.loadedS < rawWindow.S) note += ` Chart also shows earlier data from ${fmtWall(wallMs(raw.loadedS, z))}.`;
+  if (raw.loadedE > rawWindow.E) note += ` Chart also shows later data up to ${fmtWall(wallMs(raw.loadedE, z))}.`;
   note += ' Source: Open-Meteo historical API. Values stamped hh:00 cover the preceding hour.';
   $('source-note').textContent = note;
 }

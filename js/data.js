@@ -1,5 +1,5 @@
 // Time-zone helpers, Open-Meteo requests and aggregation.
-import { VAR_BY_KEY, baseUnit, displayUnit, convert } from './vars.js?v=5';
+import { VAR_BY_KEY, baseUnit, displayUnit, convert } from './vars.js?v=6';
 
 const ARCHIVE = 'https://archive-api.open-meteo.com/v1/archive';
 const FORECAST = 'https://api.open-meteo.com/v1/forecast';
@@ -79,9 +79,39 @@ export function fmtWall(ms, withTime = true, withYear = true) {
   return s;
 }
 
+// Durations for "end + duration": h, d, w, mo, y. Days and longer are calendar-based in the
+// location's time zone (same wall-clock hour, DST-safe; 31 Mar − 1 month = 28/29 Feb).
+export const DURATION_UNITS = { h: 'h', d: 'd', w: 'w', mo: 'mo', y: 'y' };
+
+export function subtractDuration(sec, qty, unit, tz) {
+  if (unit === 'h') return sec - qty * HOUR;
+  const p = localParts(sec, tz);
+  const months = unit === 'y' ? qty * 12 : unit === 'mo' ? qty : 0;
+  const days = unit === 'w' ? qty * 7 : unit === 'd' ? qty : 0;
+  const m0 = p.month - 1 - months;
+  const y = p.year + Math.floor(m0 / 12);
+  const m = ((m0 % 12) + 12) % 12;
+  const day = Math.min(p.day, new Date(Date.UTC(y, m + 1, 0)).getUTCDate());
+  const t = new Date(Date.UTC(y, m, day - days, p.hour, p.minute));
+  return zonedToUnix(t.toISOString().slice(0, 16), tz);
+}
+
+// Largest unit that expresses S→E exactly (used when switching from a date range).
+export function bestDuration(S, E, tz) {
+  const approx = { y: 365.2425 * 86400, mo: 30.436875 * 86400, w: 7 * 86400, d: 86400 };
+  for (const unit of ['y', 'mo', 'w', 'd']) {
+    const q = Math.round((E - S) / approx[unit]);
+    if (q >= 1 && subtractDuration(E, q, unit, tz) === S) return { qty: q, unit };
+  }
+  return { qty: Math.max(1, Math.round((E - S) / HOUR)), unit: 'h' };
+}
+
 export function fmtDuration(hours) {
   if (hours % 24 === 0) return `${hours / 24} day${hours === 24 ? '' : 's'}`;
-  if (hours > 72) return `${(hours / 24).toFixed(1)} days`;
+  if (hours > 72) {
+    const d = hours / 24; // a daylight-saving change makes calendar days 23 or 25 h long
+    return `${Math.abs(d - Math.round(d)) < 0.1 ? Math.round(d) : d.toFixed(1)} days`;
+  }
   return `${hours} h`;
 }
 

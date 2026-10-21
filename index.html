@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Rain Archive</title>
   <meta name="description" content="Past rain totals and weather history for any place, from Open-Meteo historical data.">
   <meta name="theme-color" content="#1f6fd1">
@@ -10,10 +10,10 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="css/app.css?v=5">
+  <link rel="stylesheet" href="css/app.css?v=6">
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js" defer></script>
-  <script type="module" src="js/app.js?v=5"></script>
+  <script type="module" src="js/app.js?v=6"></script>
 </head>
 <body>
   <header class="topbar" id="topbar">
@@ -73,6 +73,9 @@
             <select id="qty-unit" aria-label="Duration unit">
               <option value="h">hours</option>
               <option value="d" selected>days</option>
+              <option value="w">weeks</option>
+              <option value="mo">months</option>
+              <option value="y">years</option>
             </select>
           </div>
         </div>
@@ -131,6 +134,9 @@
         <div id="view-btns" class="view-btns" role="group" aria-label="Chart time window" hidden>
           <button type="button" class="btn small icon" data-view="period" title="Whole period" aria-label="Whole period">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5v14M21 5v14"/><path d="M7 12h10"/><path d="M9.5 9.5 7 12l2.5 2.5M14.5 9.5 17 12l-2.5 2.5"/></svg>
+          </button>
+          <button type="button" class="btn small icon" data-view="now" title="Up to now (period unchanged)" aria-label="Up to now">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h13"/><path d="M12 7.5 16.5 12 12 16.5"/><path d="M20.5 4v16"/></svg>
           </button>
           <button type="button" class="btn small" data-view="24">1 d</button>
           <button type="button" class="btn small" data-view="72">3 d</button>
