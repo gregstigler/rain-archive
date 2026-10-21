@@ -1,11 +1,11 @@
 import {
   VARS, VAR_BY_KEY, QUICK_VARS, FAMILIES, MODELS, IFS_FROM, pre2017Source, defaultUnits, decimals, wmoLabel, compass,
-} from './vars.js';
+} from './vars.js?v=5';
 import {
   HOUR, searchPlaces, resolvePoint, getElevation, fetchHourly, aggregate,
   zonedToUnix, unixToZonedInput, floorLocalHour, wallMs, fmtWall, fmtDuration,
-} from './data.js';
-import { renderCharts, disposeCharts, resizeCharts } from './charts.js';
+} from './data.js?v=5';
+import { renderCharts, disposeCharts, resizeCharts } from './charts.js?v=5';
 
 const $ = (id) => document.getElementById(id);
 const STORE_KEY = 'rain-archive-state';
@@ -17,9 +17,9 @@ const MAX_SPAN_DAYS = 366 * 20;
 const state = {
   loc: null,
   favorites: [],
-  preset: '24',
   otherMode: 'end',
-  end: '', qty: 7, qtyUnit: 'd',
+  endNow: true,          // "Up to now": the end follows the current hour
+  end: '', qty: 1, qtyUnit: 'd',
   rangeStart: '', rangeEnd: '',
   vars: ['rain'],
   agg: 'hour',
@@ -34,7 +34,17 @@ let zoomWin = null;      // visible chart window {startMs, endMs} in wall ms, ke
 function load() {
   try {
     const s = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
-    if (s) Object.assign(state, s, { units: { ...defaultUnits(), ...(s.units || {}) } });
+    if (s) {
+      Object.assign(state, s, { units: { ...defaultUnits(), ...(s.units || {}) } });
+      // Older versions had a "Last N hours" preset list: turn it into "Up to now" + duration.
+      if ('preset' in s) {
+        if (s.preset !== 'other') {
+          const h = Number(s.preset);
+          Object.assign(state, { otherMode: 'end', endNow: true, qty: h % 24 ? h : h / 24, qtyUnit: h % 24 ? 'h' : 'd' });
+        } else if (!('endNow' in s)) state.endNow = false;
+        delete state.preset;
+      }
+    }
   } catch { /* storage unavailable */ }
   state.vars = state.vars.filter((k) => VAR_BY_KEY[k]);
   if (!['hour', 'day'].includes(state.agg)) state.agg = 'hour'; // the old "whole period" mode is now in chart titles
@@ -68,7 +78,7 @@ function updateTabs() {
   $('tab-location').textContent = state.loc ? state.loc.name : 'Choose…';
   const w = computeWindow();
   let p;
-  if (state.preset !== 'other') p = `Last ${fmtDuration(Number(state.preset))}`;
+  if (state.otherMode === 'end' && state.endNow) p = `Last ${state.qty} ${state.qtyUnit === 'd' ? 'd' : 'h'}`;
   else if (w.error) p = 'Incomplete';
   else {
     const z = tz();
@@ -270,10 +280,8 @@ function computeWindow() {
   const z = tz();
   const now = nowHour();
   let S, E, note = '';
-  if (state.preset !== 'other') {
-    E = now; S = E - Number(state.preset) * HOUR;
-  } else if (state.otherMode === 'end') {
-    E = zonedToUnix(state.end, z);
+  if (state.otherMode === 'end') {
+    E = state.endNow ? now : zonedToUnix(state.end, z);
     const q = Math.floor(Number(state.qty));
     if (E == null) return { error: 'Choose an end date and time.' };
     if (!(q >= 1)) return { error: 'Duration must be at least 1.' };
@@ -301,11 +309,12 @@ function renderPeriodSummary() {
 }
 
 function syncPeriodUI() {
-  $('preset').value = state.preset;
-  $('other').hidden = state.preset !== 'other';
   document.querySelector(`input[name="other-mode"][value="${state.otherMode}"]`).checked = true;
   $('mode-end').hidden = state.otherMode !== 'end';
   $('mode-range').hidden = state.otherMode !== 'range';
+  $('end-now').checked = state.endNow;
+  $('end').disabled = state.endNow;
+  if (state.endNow) state.end = unixToZonedInput(nowHour(), tz());
   $('end').value = state.end;
   $('qty').value = state.qty;
   $('qty-unit').value = state.qtyUnit;
@@ -323,7 +332,7 @@ function prefillOther() {
 
 function onPeriodChange() { save(); syncPeriodUI(); scheduleFetch(); }
 
-$('preset').onchange = (e) => { state.preset = e.target.value; if (state.preset === 'other') prefillOther(); onPeriodChange(); };
+$('end-now').onchange = (e) => { state.endNow = e.target.checked; onPeriodChange(); };
 // Switching between "end + duration" and "date range" keeps the same period.
 function convertOtherMode(to) {
   const z = tz();
@@ -335,7 +344,7 @@ function convertOtherMode(to) {
     } else if (state.end) state.rangeEnd = state.end;
   } else {
     const S = zonedToUnix(state.rangeStart, z), E = zonedToUnix(state.rangeEnd, z);
-    if (E != null) state.end = state.rangeEnd;
+    if (E != null) { state.end = state.rangeEnd; state.endNow = E >= nowHour(); }
     if (S != null && E != null && E > S) {
       const hours = Math.max(1, Math.round((E - S) / HOUR));
       if (hours % 24 === 0) { state.qty = hours / 24; state.qtyUnit = 'd'; }
@@ -363,9 +372,8 @@ function checkbox(v) {
   cb.onchange = () => {
     if (cb.checked) { if (!state.vars.includes(v.key)) state.vars.push(v.key); }
     else state.vars = state.vars.filter((k) => k !== v.key);
-    document.querySelectorAll(`input[type=checkbox][value="${v.key}"]`).forEach((x) => { x.checked = cb.checked; });
     save();
-    renderVarCount();
+    renderVars(); // selected variables move to the top list, unselected ones go back to "Other"
     renderUnits();
     // Already-fetched variables only need a re-render; new ones need a fetch.
     if (raw && state.vars.every((k) => k in raw.values)) renderResults(); else scheduleFetch();
@@ -375,15 +383,17 @@ function checkbox(v) {
   return label;
 }
 
+// Top list: the quick variables plus every selected one; "Other variables": the rest.
 function renderVars() {
+  const top = [...QUICK_VARS, ...state.vars.filter((k) => !QUICK_VARS.includes(k))];
   const quick = $('quick-vars');
   quick.innerHTML = '';
-  QUICK_VARS.forEach((k) => quick.append(checkbox(VAR_BY_KEY[k])));
+  top.forEach((k) => quick.append(checkbox(VAR_BY_KEY[k])));
   const list = $('var-list');
   list.innerHTML = '';
   let cat = null;
   for (const v of VARS) {
-    if (QUICK_VARS.includes(v.key)) continue;
+    if (top.includes(v.key)) continue;
     if (v.cat !== cat) {
       cat = v.cat;
       const h = document.createElement('h3');
@@ -393,17 +403,14 @@ function renderVars() {
     list.append(checkbox(v));
   }
   renderVarCount();
+  applyVarFilter();
 }
 
-function renderVarCount() {
-  updateTabs();
-  const n = state.vars.filter((k) => !QUICK_VARS.includes(k)).length;
-  $('other-count').hidden = !n;
-  $('other-count').textContent = n;
-}
+function renderVarCount() { updateTabs(); }
 
-$('var-filter').addEventListener('input', (e) => {
-  const q = e.target.value.trim().toLowerCase();
+$('var-filter').addEventListener('input', applyVarFilter);
+function applyVarFilter() {
+  const q = $('var-filter').value.trim().toLowerCase();
   const list = $('var-list');
   list.querySelectorAll('label').forEach((l) => { l.hidden = q && !l.dataset.search.includes(q); });
   list.querySelectorAll('h3').forEach((h) => {
@@ -411,16 +418,26 @@ $('var-filter').addEventListener('input', (e) => {
     while (el && el.tagName === 'LABEL') { if (!el.hidden) any = true; el = el.nextElementSibling; }
     h.hidden = !any;
   });
-});
+}
 
-document.querySelectorAll('input[name="agg"]').forEach((r) => {
-  r.onchange = () => {
-    state.agg = r.value;
-    save();
-    updateTabs();
-    if (activeView && activeView !== 'period' && raw) applyView(activeView); else renderResults();
-  };
-});
+// Time step (hour/day): set from the Data panel or the "/h" "/d" toolbar button.
+function syncStepUI() {
+  document.querySelector(`input[name="agg"][value="${state.agg}"]`).checked = true;
+  const b = $('btn-step');
+  const day = state.agg === 'day';
+  b.textContent = day ? '/d' : '/h';
+  b.title = day ? 'Time step: per day (tap for per hour)' : 'Time step: per hour (tap for per day)';
+  b.setAttribute('aria-label', day ? 'Time step: per day' : 'Time step: per hour');
+}
+function setAgg(value) {
+  state.agg = value;
+  save();
+  syncStepUI();
+  updateTabs();
+  if (activeView && activeView !== 'period' && raw) applyView(activeView); else renderResults();
+}
+document.querySelectorAll('input[name="agg"]').forEach((r) => { r.onchange = () => setAgg(r.value); });
+$('btn-step').onclick = () => setAgg(state.agg === 'day' ? 'hour' : 'day');
 
 // ---------- Units & model ----------
 
@@ -689,7 +706,8 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => rend
 // ---------- Boot ----------
 
 load();
-document.querySelector(`input[name="agg"][value="${state.agg}"]`).checked = true;
+prefillOther();
+syncStepUI();
 renderLocation();
 syncPeriodUI();
 renderVars();
@@ -700,5 +718,9 @@ if (!state.loc) openPanel('card-location');
 scheduleFetch(0);
 
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {}));
 }
+
+// Show unexpected errors in the status line so they can be reported.
+window.addEventListener('error', (e) => setStatus(`Error: ${e.message}`, 'error'));
+window.addEventListener('unhandledrejection', (e) => setStatus(`Error: ${e.reason?.message || e.reason}`, 'error'));

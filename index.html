@@ -10,10 +10,10 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="css/app.css">
+  <link rel="stylesheet" href="css/app.css?v=5">
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js" defer></script>
-  <script type="module" src="js/app.js"></script>
+  <script type="module" src="js/app.js?v=5"></script>
 </head>
 <body>
   <header class="topbar" id="topbar">
@@ -26,7 +26,7 @@
         <span class="tab-name">📍 Location</span><span class="tab-val" id="tab-location">–</span>
       </button>
       <button type="button" class="tab" data-panel="card-period" aria-expanded="false">
-        <span class="tab-name">🕒 Period</span><span class="tab-val" id="tab-period">–</span>
+        <span class="tab-name"><svg class="ico-period" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5v14M21 5v14"/><path d="M7 12h10"/><path d="M9.5 9.5 7 12l2.5 2.5M14.5 9.5 17 12l-2.5 2.5"/></svg>Period</span><span class="tab-val" id="tab-period">–</span>
       </button>
       <button type="button" class="tab" data-panel="card-data" aria-expanded="false">
         <span class="tab-name">📊 Data</span><span class="tab-val" id="tab-data">–</span>
@@ -54,29 +54,18 @@
 
   <!-- Period -->
   <section class="panel" id="card-period" hidden>
-    <label class="field first">
-      <span>Show</span>
-      <select id="preset">
-        <option value="6">Last 6 hours</option>
-        <option value="12">Last 12 hours</option>
-        <option value="24">Last 1 day</option>
-        <option value="48">Last 2 days</option>
-        <option value="72">Last 3 days</option>
-        <option value="other">Other…</option>
-      </select>
-    </label>
-
-    <div id="other" hidden>
-      <div class="seg" role="radiogroup" aria-label="Period type">
+    <div>
+      <div class="seg first" role="radiogroup" aria-label="Period type">
         <label><input type="radio" name="other-mode" value="end" checked><span>End date + duration</span></label>
         <label><input type="radio" name="other-mode" value="range"><span>Date range</span></label>
       </div>
 
       <div id="mode-end">
-        <label class="field">
+        <div class="field">
           <span>End</span>
-          <input id="end" type="datetime-local" step="3600">
-        </label>
+          <label class="check"><input id="end-now" type="checkbox"> Up to now</label>
+          <input id="end" type="datetime-local" step="3600" aria-label="End date and time">
+        </div>
         <div class="field">
           <span>Duration</span>
           <div class="row">
@@ -107,7 +96,7 @@
   <section class="panel" id="card-data" hidden>
     <div id="quick-vars" class="checks"></div>
     <details id="other-vars">
-      <summary>Other variables <span id="other-count" class="badge" hidden></span></summary>
+      <summary>Other variables</summary>
       <input id="var-filter" type="search" placeholder="Filter variables…" aria-label="Filter variables">
       <div id="var-list"></div>
     </details>
@@ -140,7 +129,9 @@
     <section id="results">
       <div class="toolbar">
         <div id="view-btns" class="view-btns" role="group" aria-label="Chart time window" hidden>
-          <button type="button" class="btn small" data-view="period">Period</button>
+          <button type="button" class="btn small icon" data-view="period" title="Whole period" aria-label="Whole period">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5v14M21 5v14"/><path d="M7 12h10"/><path d="M9.5 9.5 7 12l2.5 2.5M14.5 9.5 17 12l-2.5 2.5"/></svg>
+          </button>
           <button type="button" class="btn small" data-view="24">1 d</button>
           <button type="button" class="btn small" data-view="72">3 d</button>
           <button type="button" class="btn small" data-view="168">1 w</button>
@@ -150,6 +141,7 @@
           <button type="button" id="btn-chart-mode" class="btn icon" aria-pressed="false" title="Combine charts" aria-label="Combine charts" hidden>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l5-6 4 4 5-8 4 5"/><path d="M3 20h18"/><path d="M3 13l5 2 4-3 5 3 4-2" opacity=".55"/></svg>
           </button>
+          <button type="button" id="btn-step" class="btn icon step" title="Time step: per hour (tap for per day)" aria-label="Time step: per hour">/h</button>
           <button type="button" id="btn-fullscreen" class="btn icon" title="Full screen" aria-label="Full screen" hidden>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
           </button>

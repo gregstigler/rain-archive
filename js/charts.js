@@ -1,6 +1,6 @@
 // ECharts rendering: one synced chart per variable ("stacked") or a single multi-axis chart ("combined").
-import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js';
-import { fmtWall } from './data.js';
+import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=5';
+import { fmtWall } from './data.js?v=5';
 
 const PALETTE = ['#2f7fd8', '#e8743b', '#19a979', '#945ecf', '#d4526e', '#13a4b4', '#ce8f1f', '#6b7a8f'];
 const GROUP = 'rain-archive';
@@ -169,18 +169,20 @@ export function renderCharts(container, agg, keys, gran, mode, opts = {}) {
     const el = document.createElement('div');
     el.className = 'chart combined';
     container.appendChild(el);
-    // One y axis per unit (+ one per unit for running totals), alternating left/right.
-    // On narrow screens only the first two axes are drawn; the others still scale their series.
+    // One y axis per unit (+ one per unit for running totals), alternating left/right, all labelled.
+    // Each axis is coloured like its variable so it is clear which scale goes with which curve.
     const narrow = container.clientWidth < 600;
-    const AX_W = 46;
+    const AX_W = narrow ? 34 : 46;
     const axes = [];
-    const axisIdx = (id, name, kind) => {
+    const axisIdx = (id, name, kind, col) => {
       let i = axes.findIndex((a) => a.id === id);
       if (i < 0) {
         const side = axes.length % 2 === 0 ? 'left' : 'right';
         const offset = Math.floor(axes.length / 2) * AX_W;
         const ax = yAxis(name, kind, theme, side, offset, axes.length === 0);
-        if (narrow && axes.length >= 2) ax.show = false;
+        ax.axisLine = { show: true, lineStyle: { color: col } };
+        ax.axisLabel = { ...ax.axisLabel, color: col, fontSize: narrow ? 10 : 11, margin: 4 };
+        ax.nameTextStyle = { ...ax.nameTextStyle, color: col, fontSize: narrow ? 10 : 11 };
         axes.push({ id, ...ax });
         i = axes.length - 1;
       }
@@ -191,13 +193,12 @@ export function renderCharts(container, agg, keys, gran, mode, opts = {}) {
       const v = VAR_BY_KEY[k];
       const s = series[k];
       const unitName = v.kind === 'code' ? 'WMO' : s.unit;
-      const main = axisIdx(`${v.kind === 'dir' ? 'dir' : unitName}`, unitName, v.kind);
-      const cum = s.cum ? axisIdx(`${unitName}-cum`, `Σ ${unitName}`, 'sum') : 0;
+      const main = axisIdx(`${v.kind === 'dir' ? 'dir' : unitName}`, unitName, v.kind, color(k));
+      const cum = s.cum ? axisIdx(`${unitName}-cum`, `Σ ${unitName}`, 'sum', theme.muted) : 0;
       all.push(...seriesFor(k, s, x, gran, color(k), { main, cum }, theme));
     }
-    const shown = narrow ? Math.min(axes.length, 2) : axes.length;
-    const lefts = Math.ceil(shown / 2), rights = Math.floor(shown / 2);
-    const opt = baseOption(x, gran, theme, makeTooltip(keys), true, 10 + Math.max(rights, 1) * AX_W, 10 + lefts * AX_W, zoom);
+    const lefts = Math.ceil(axes.length / 2), rights = Math.floor(axes.length / 2);
+    const opt = baseOption(x, gran, theme, makeTooltip(keys), true, 8 + Math.max(rights, 1) * AX_W, 8 + lefts * AX_W, zoom);
     opt.yAxis = axes.map(({ id, ...a }) => a);
     opt.series = all; // no legend: the coloured titles above the chart play that role
     const chart = echarts.init(el, null, { renderer: 'canvas' });
