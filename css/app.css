@@ -53,8 +53,8 @@ body {
 a { color: var(--accent); }
 
 .topbar {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px;
-  padding: 4px 2% 6px; /* same 4 px above the logo as between the logo and the tabs */
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+  padding: 8px 2% 6px; /* same 8 px above the logo as between the logo and the tabs */
   background: var(--card); border-bottom: 1px solid var(--line);
   position: sticky; top: 0; z-index: 500;
 }
@@ -155,6 +155,10 @@ input:disabled { opacity: .55; }
 .checks input, #var-list input { width: 18px; height: 18px; accent-color: var(--accent); }
 details { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
 summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+details.first { margin-top: 0; border-top: 0; padding-top: 0; }
+details.sub { margin-top: 4px; border-top: 0; padding-top: 0; }
+details.sub > summary { font-weight: 400; }
+#step-box .seg { margin-top: 6px; }
 #var-filter { margin: 8px 0; }
 #var-list { max-height: 340px; overflow: auto; }
 #var-list h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 10px 0 2px; }

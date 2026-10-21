@@ -1,12 +1,12 @@
 import {
   VARS, VAR_BY_KEY, QUICK_VARS, FAMILIES, MODELS, IFS_FROM, pre2017Source, defaultUnits, decimals, wmoLabel, compass,
-} from './vars.js?v=6';
+} from './vars.js?v=7';
 import {
   HOUR, searchPlaces, resolvePoint, getElevation, fetchHourly, aggregate,
   zonedToUnix, unixToZonedInput, floorLocalHour, wallMs, fmtWall, fmtDuration,
   DURATION_UNITS, subtractDuration, bestDuration,
-} from './data.js?v=6';
-import { renderCharts, disposeCharts, resizeCharts } from './charts.js?v=6';
+} from './data.js?v=7';
+import { renderCharts, disposeCharts, resizeCharts } from './charts.js?v=7';
 
 const $ = (id) => document.getElementById(id);
 const STORE_KEY = 'rain-archive-state';
@@ -436,7 +436,7 @@ function setAgg(value) {
   save();
   syncStepUI();
   updateTabs();
-  if (activeView && activeView !== 'period' && raw) applyView(activeView); else renderResults();
+  if (activeView && raw) applyView(activeView); else renderResults(); // re-fit the view to the new buckets
 }
 document.querySelectorAll('input[name="agg"]').forEach((r) => { r.onchange = () => setAgg(r.value); });
 $('btn-step').onclick = () => setAgg(state.agg === 'day' ? 'hour' : 'day');
@@ -512,6 +512,7 @@ let loadingEarlier = false, edgeTimer;
 function onChartZoom(z) {
   zoomWin = { startMs: z.startMs, endMs: z.endMs };
   setActiveView(null);
+  renderVisibleRange();
   clearTimeout(edgeTimer);
   if (z.atLeftEdge && raw) {
     edgeTimer = setTimeout(() => loadEarlierTo(raw.loadedS - 3 * (z.endMs - z.startMs) / 1000), 350);
@@ -719,13 +720,21 @@ function renderResults() {
       { zoom: zoomWin, onZoom: onChartZoom, titles });
   }
 
-  const z = raw.tz;
   $('model-used').textContent = modelUsedText(keys, raw.loadedS, rawWindow.E);
-  let note = `Period: ${fmtWall(wallMs(rawWindow.S, z))} → ${fmtWall(wallMs(rawWindow.E, z))} (${z}).`;
-  if (raw.loadedS < rawWindow.S) note += ` Chart also shows earlier data from ${fmtWall(wallMs(raw.loadedS, z))}.`;
-  if (raw.loadedE > rawWindow.E) note += ` Chart also shows later data up to ${fmtWall(wallMs(raw.loadedE, z))}.`;
-  note += ' Source: Open-Meteo historical API. Values stamped hh:00 cover the preceding hour.';
-  $('source-note').textContent = note;
+  renderVisibleRange();
+}
+
+// "From … to …" of what the chart currently shows (follows zoom and pan).
+function renderVisibleRange() {
+  if (!lastX.length) { $('source-note').textContent = ''; return; }
+  const day = state.agg === 'day';
+  const startMs = zoomWin ? zoomWin.startMs : -Infinity, endMs = zoomWin ? zoomWin.endMs : Infinity;
+  const shown = lastX.filter((x) => x >= startMs && x <= endMs);
+  if (!shown.length) { $('source-note').textContent = ''; return; }
+  // An hourly bar stamped hh:00 covers the hour before it.
+  const from = day ? fmtWall(shown[0], false) : fmtWall(shown[0] - 3600e3);
+  const to = day ? fmtWall(shown[shown.length - 1], false) : fmtWall(shown[shown.length - 1]);
+  $('source-note').textContent = `From ${from} to ${to}`;
 }
 
 $('btn-refresh').onclick = () => { syncPeriodUI(); scheduleFetch(0); };

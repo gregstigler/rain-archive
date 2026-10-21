@@ -1,6 +1,6 @@
 // ECharts rendering: one synced chart per variable ("stacked") or a single multi-axis chart ("combined").
-import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=6';
-import { fmtWall } from './data.js?v=6';
+import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=7';
+import { fmtWall } from './data.js?v=7';
 
 const PALETTE = ['#2f7fd8', '#e8743b', '#19a979', '#945ecf', '#d4526e', '#13a4b4', '#ce8f1f', '#6b7a8f'];
 const GROUP = 'rain-archive';

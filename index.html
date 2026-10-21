@@ -10,10 +10,10 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="css/app.css?v=6">
+  <link rel="stylesheet" href="css/app.css?v=7">
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js" defer></script>
-  <script type="module" src="js/app.js?v=6"></script>
+  <script type="module" src="js/app.js?v=7"></script>
 </head>
 <body>
   <header class="topbar" id="topbar">
@@ -97,20 +97,23 @@
 
   <!-- Data -->
   <section class="panel" id="card-data" hidden>
-    <div id="quick-vars" class="checks"></div>
-    <details id="other-vars">
-      <summary>Other variables</summary>
-      <input id="var-filter" type="search" placeholder="Filter variables…" aria-label="Filter variables">
-      <div id="var-list"></div>
+    <details id="vars-box" class="first" open>
+      <summary>Variables</summary>
+      <div id="quick-vars" class="checks"></div>
+      <details id="other-vars" class="sub">
+        <summary>Other variables</summary>
+        <input id="var-filter" type="search" placeholder="Filter variables…" aria-label="Filter variables">
+        <div id="var-list"></div>
+      </details>
     </details>
 
-    <div class="field">
-      <span>Time step (one bar / point per…)</span>
-      <div class="seg" role="radiogroup" aria-label="Time step">
-        <label><input type="radio" name="agg" value="hour" checked><span>Hour</span></label>
-        <label><input type="radio" name="agg" value="day"><span>Day</span></label>
+    <details id="step-box" open>
+      <summary>Time step</summary>
+      <div class="seg" role="radiogroup" aria-label="Time step: one bar or point per hour or per day">
+        <label><input type="radio" name="agg" value="hour" checked><span>Per hour</span></label>
+        <label><input type="radio" name="agg" value="day"><span>Per day</span></label>
       </div>
-    </div>
+    </details>
 
     <details id="units-box">
       <summary>Units</summary>
