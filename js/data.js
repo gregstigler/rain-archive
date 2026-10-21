@@ -3,7 +3,8 @@ import { VAR_BY_KEY, baseUnit, displayUnit, convert } from './vars.js';
 
 const ARCHIVE = 'https://archive-api.open-meteo.com/v1/archive';
 const FORECAST = 'https://api.open-meteo.com/v1/forecast';
-const GEOCODE = 'https://geocoding-api.open-meteo.com/v1/search';
+const ELEVATION = 'https://api.open-meteo.com/v1/elevation';
+const GEOCODE ='https://geocoding-api.open-meteo.com/v1/search';
 const REVERSE = 'https://nominatim.openstreetmap.org/reverse';
 
 export const HOUR = 3600;
@@ -118,6 +119,12 @@ export async function resolvePoint(lat, lon) {
     lat: +lat.toFixed(4), lon: +lon.toFixed(4),
     elevation: meta.elevation, tz: meta.timezone,
   };
+}
+
+// Terrain elevation (m) of a point, from Open-Meteo's 90 m digital elevation model.
+export async function getElevation(lat, lon, signal) {
+  const j = await getJSON(`${ELEVATION}?latitude=${lat}&longitude=${lon}`, signal);
+  return j.elevation?.[0] ?? null;
 }
 
 // ---------- Weather data ----------

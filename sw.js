@@ -1,5 +1,5 @@
 // Service worker: cache the app shell and CDN libraries; weather/geocoding APIs always go to the network.
-const VERSION = 'rain-archive-v2';
+const VERSION = 'rain-archive-v3';
 const SHELL = [
   './',
   'index.html',

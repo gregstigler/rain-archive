@@ -24,14 +24,6 @@ function titleEl(key, color, t) {
   return el;
 }
 
-// Totals only (no chart): one title line per variable.
-export function renderTitles(container, keys, titles) {
-  disposeCharts();
-  container.innerHTML = '';
-  container.classList.add('titles-only');
-  keys.forEach((k) => container.append(titleEl(k, colorFor(keys, k), titles[k])));
-}
-
 export function disposeCharts() {
   instances.forEach((c) => c.dispose());
   instances = [];
@@ -107,6 +99,8 @@ function baseOption(x, gran, theme, tooltipFmt, showSlider, gridRight, gridLeft,
   const step = gran === 'day' ? 86400e3 : 3600e3;
   const { min, max } = axisRange(x, gran);
   const win = zoom ? { startValue: Math.max(min, zoom.startMs), endValue: Math.min(max, zoom.endMs) } : {};
+  // Wide daily bars just outside the window would otherwise spill into view: drop them.
+  const filterMode = gran === 'day' ? 'filter' : 'none';
   return {
     useUTC: true, // x values are wall-clock times of the location, encoded as UTC
     animation: false,
@@ -119,13 +113,15 @@ function baseOption(x, gran, theme, tooltipFmt, showSlider, gridRight, gridLeft,
       formatter: tooltipFmt,
     },
     xAxis: {
-      type: 'time', min, max,
-      axisLabel: { color: theme.muted, fontSize: 11, hideOverlap: true }, axisLine: { lineStyle: { color: theme.line } },
+      type: 'time', min, max, minInterval: gran === 'day' ? 86400e3 : undefined,
+      axisLabel: { color: theme.muted, fontSize: 11, hideOverlap: true,
+        ...(gran === 'day' ? { formatter: { year: '{yyyy}', month: '{MMM}', day: '{d} {MMM}', hour: '', minute: '' } } : {}) },
+      axisLine: { lineStyle: { color: theme.line } },
       splitLine: { show: false },
     },
     dataZoom: [
-      { type: 'inside', id: 'dz-in', xAxisIndex: 0, filterMode: 'none', zoomOnMouseWheel: true, moveOnMouseMove: true, minValueSpan: step * 3, ...win },
-      { type: 'slider', id: 'dz-sl', xAxisIndex: 0, filterMode: 'none', show: showSlider, height: 22, bottom: 10, ...win,
+      { type: 'inside', id: 'dz-in', xAxisIndex: 0, filterMode, zoomOnMouseWheel: true, moveOnMouseMove: true, minValueSpan: gran === 'day' ? step : step * 3, ...win },
+      { type: 'slider', id: 'dz-sl', xAxisIndex: 0, filterMode, show: showSlider, height: 22, bottom: 10, ...win,
         borderColor: theme.line, textStyle: { color: theme.muted, fontSize: 10 }, labelFormatter: (ms) => fmtWall(ms, gran === 'hour', false) },
     ],
   };
@@ -143,7 +139,7 @@ function themeColors() {
 export function renderCharts(container, agg, keys, gran, mode, opts = {}) {
   disposeCharts();
   container.innerHTML = '';
-  container.classList.remove('titles-only');
+  container.style.setProperty('--n', keys.length); // used by full-screen sizing
   if (!agg.x.length) return;
   const theme = themeColors();
   const { x, hours, series } = agg;

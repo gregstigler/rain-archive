@@ -2,10 +2,10 @@ import {
   VARS, VAR_BY_KEY, QUICK_VARS, FAMILIES, MODELS, IFS_FROM, pre2017Source, defaultUnits, decimals, wmoLabel, compass,
 } from './vars.js';
 import {
-  HOUR, searchPlaces, resolvePoint, fetchHourly, aggregate,
+  HOUR, searchPlaces, resolvePoint, getElevation, fetchHourly, aggregate,
   zonedToUnix, unixToZonedInput, floorLocalHour, wallMs, fmtWall, fmtDuration,
 } from './data.js';
-import { renderCharts, renderTitles, disposeCharts, resizeCharts } from './charts.js';
+import { renderCharts, disposeCharts, resizeCharts } from './charts.js';
 
 const $ = (id) => document.getElementById(id);
 const STORE_KEY = 'rain-archive-state';
@@ -37,6 +37,7 @@ function load() {
     if (s) Object.assign(state, s, { units: { ...defaultUnits(), ...(s.units || {}) } });
   } catch { /* storage unavailable */ }
   state.vars = state.vars.filter((k) => VAR_BY_KEY[k]);
+  if (!['hour', 'day'].includes(state.agg)) state.agg = 'hour'; // the old "whole period" mode is now in chart titles
 }
 function save() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch { /* ignore */ }
@@ -45,19 +46,23 @@ function save() {
 const tz = () => state.loc?.tz || Intl.DateTimeFormat().resolvedOptions().timeZone;
 const nowHour = () => floorLocalHour(Date.now() / 1000, tz());
 
-// ---------- Tabs (collapsible settings panels) ----------
+// ---------- Tabs (settings panels shown as an overlay under the header) ----------
 
 const tabs = [...document.querySelectorAll('.tab')];
 function openPanel(id) {
+  document.documentElement.style.setProperty('--header-h', `${Math.round($('topbar').getBoundingClientRect().bottom)}px`);
   for (const t of tabs) {
     const on = t.dataset.panel === id;
     t.setAttribute('aria-expanded', on);
     $(t.dataset.panel).hidden = !on;
   }
+  $('panel-backdrop').hidden = !id;
 }
 tabs.forEach((t) => {
   t.onclick = () => openPanel(t.getAttribute('aria-expanded') === 'true' ? null : t.dataset.panel);
 });
+$('panel-backdrop').onclick = () => openPanel(null);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('panel-backdrop').hidden && !$('map-dialog').open) openPanel(null); });
 
 function updateTabs() {
   $('tab-location').textContent = state.loc ? state.loc.name : 'Choose…';
@@ -74,7 +79,7 @@ function updateTabs() {
   }
   $('tab-period').textContent = p;
   const first = state.vars[0] ? VAR_BY_KEY[state.vars[0]].label : 'None';
-  const aggTxt = { total: 'total', day: 'per day', hour: 'per hour' }[state.agg];
+  const aggTxt = { day: 'daily', hour: 'hourly' }[state.agg];
   $('tab-data').textContent = `${first}${state.vars.length > 1 ? ` +${state.vars.length - 1}` : ''} · ${aggTxt}`;
 }
 
@@ -103,8 +108,19 @@ function renderLocation() {
   if (loc.region) box.append(`, ${loc.region}`);
   const sub = document.createElement('div');
   sub.className = 'small';
-  sub.textContent = `${loc.lat.toFixed(3)}°, ${loc.lon.toFixed(3)}°` +
-    (loc.elevation != null ? ` · ${Math.round(loc.elevation)} m` : '') + ` · ${loc.tz}`;
+  const coords = `${loc.lat.toFixed(4)}, ${loc.lon.toFixed(4)}`;
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.className = 'btn mini';
+  copy.textContent = 'Copy';
+  copy.title = 'Copy coordinates';
+  copy.onclick = async () => {
+    try { await navigator.clipboard.writeText(coords); copy.textContent = '✓ Copied'; }
+    catch { copy.textContent = 'Failed'; }
+    setTimeout(() => { copy.textContent = 'Copy'; }, 1500);
+  };
+  sub.append(`${loc.lat.toFixed(3)}°, ${loc.lon.toFixed(3)}°`, copy,
+    (loc.elevation != null ? ` · ${Math.round(loc.elevation)} m` : '') + ` · ${loc.tz}`);
   box.append(sub);
   renderFavorites();
 }
@@ -207,14 +223,26 @@ $('btn-map').onclick = () => {
   dlg.showModal();
   if (!map) {
     map = L.map('map', { worldCopyJump: true });
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 18, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+      maxZoom: 17, subdomains: 'abc',
+      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, SRTM · style © <a href="https://opentopomap.org/">OpenTopoMap</a> (CC BY-SA)',
     }).addTo(map);
-    map.on('click', (e) => {
+    let elevAbort;
+    map.on('click', async (e) => {
       picked = e.latlng.wrap();
       if (marker) marker.setLatLng(e.latlng); else marker = L.marker(e.latlng).addTo(map);
-      $('map-picked').textContent = `${picked.lat.toFixed(4)}°, ${picked.lng.toFixed(4)}°`;
+      const txt = `${picked.lat.toFixed(4)}°, ${picked.lng.toFixed(4)}°`;
+      $('map-picked').textContent = `${txt} · … m`;
       $('map-use').disabled = false;
+      elevAbort?.abort();
+      elevAbort = new AbortController();
+      const at = picked;
+      try {
+        const elev = await getElevation(at.lat, at.lng, elevAbort.signal);
+        if (picked === at) $('map-picked').textContent = `${txt}${elev != null ? ` · ${Math.round(elev)} m` : ''}`;
+      } catch (err) {
+        if (err.name !== 'AbortError' && picked === at) $('map-picked').textContent = txt;
+      }
     });
   }
   const c = state.loc ? [state.loc.lat, state.loc.lon] : [46.6, 2.5];
@@ -385,7 +413,14 @@ $('var-filter').addEventListener('input', (e) => {
   });
 });
 
-$('agg').onchange = (e) => { state.agg = e.target.value; save(); updateTabs(); renderResults(); };
+document.querySelectorAll('input[name="agg"]').forEach((r) => {
+  r.onchange = () => {
+    state.agg = r.value;
+    save();
+    updateTabs();
+    if (activeView && activeView !== 'period' && raw) applyView(activeView); else renderResults();
+  };
+});
 
 // ---------- Units & model ----------
 
@@ -496,28 +531,36 @@ function setActiveView(v) {
   document.querySelectorAll('#view-btns button').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
 }
 
+// Number of buckets a view shows: N hours = N hourly bars, or N/24 daily bars (the last day may be partial).
+const viewBuckets = (view) => (state.agg === 'day' ? Math.max(1, Math.round(Number(view) / 24)) : Number(view));
+
 function viewWindow(view) {
-  const z = raw.tz;
-  const S = view === 'period' ? rawWindow.S : rawWindow.E - Number(view) * HOUR;
   const step = state.agg === 'day' ? 86400e3 : 3600e3;
-  // First bucket inside the window: hourly stamps after S, or the day containing S + 1 h.
-  const from = wallMs(S, z) - (state.agg === 'day' ? 86400e3 - 3600e3 : 0);
-  const first = lastX.find((x) => x > from) ?? lastX[0];
+  let first;
+  if (view === 'period') {
+    // First bucket of the period: hourly stamps after S, or the day containing S + 1 h.
+    const from = wallMs(rawWindow.S, raw.tz) - (state.agg === 'day' ? 86400e3 - 3600e3 : 0);
+    first = lastX.find((x) => x > from) ?? lastX[0];
+  } else {
+    first = lastX[Math.max(0, lastX.length - viewBuckets(view))];
+  }
   return { startMs: first - step / 2, endMs: lastX[lastX.length - 1] + step / 2 };
 }
 
+async function applyView(view) {
+  setActiveView(view);
+  const S = view === 'period' ? rawWindow.S
+    : rawWindow.E - viewBuckets(view) * (state.agg === 'day' ? 86400 : HOUR);
+  if (S < raw.loadedS) await loadEarlierTo(S);
+  if (activeView !== view) return; // user moved on meanwhile
+  renderResults(); // refreshes lastX for the current time step
+  zoomWin = viewWindow(view);
+  renderResults();
+  setActiveView(view);
+}
+
 document.querySelectorAll('#view-btns button').forEach((b) => {
-  b.onclick = async () => {
-    if (!raw) return;
-    const view = b.dataset.view;
-    setActiveView(view);
-    const S = view === 'period' ? rawWindow.S : rawWindow.E - Number(view) * HOUR;
-    if (S < raw.loadedS) await loadEarlierTo(S);
-    if (activeView !== view) return; // user moved on meanwhile
-    zoomWin = viewWindow(view);
-    renderResults();
-    setActiveView(view);
-  };
+  b.onclick = () => { if (raw) applyView(b.dataset.view); };
 });
 
 // Data restricted to the selected period (titles ignore earlier data loaded by panning).
@@ -540,7 +583,7 @@ function modelUsedText(keys, S, E) {
     parts.push(E <= IFS_FROM ? txt : `${txt} until 31 Dec 2016`);
   }
   if (E > IFS_FROM) parts.push(S < IFS_FROM ? 'then ECMWF IFS 9 km' : 'ECMWF IFS 9 km');
-  let t = `Auto selected: ${parts.join(', ')}.`;
+  let t = `Currently used: ${parts.join(', ')}.`;
   if (raw.filledHours) t += ` Last ${raw.filledHours} h from Open-Meteo forecast.`;
   return t;
 }
@@ -551,8 +594,8 @@ function clearResults() {
   $('charts').innerHTML = '';
   $('model-used').textContent = '';
   $('source-note').textContent = '';
-  $('chart-hint').hidden = true;
   $('btn-chart-mode').hidden = true;
+  $('btn-fullscreen').hidden = true;
   $('view-btns').hidden = true;
 }
 
@@ -597,21 +640,21 @@ function renderResults() {
   if (!raw.times.length) { setStatus('No data returned for this period.', 'error'); return; }
   const titles = buildTitles(keys);
 
-  const showCharts = state.agg !== 'total';
-  $('chart-hint').hidden = !showCharts;
-  $('view-btns').hidden = !showCharts;
+  $('view-btns').hidden = false;
+  $('btn-fullscreen').hidden = !document.fullscreenEnabled;
   const modeBtn = $('btn-chart-mode');
-  modeBtn.hidden = !showCharts || keys.length < 2;
-  modeBtn.textContent = state.chartMode === 'stacked' ? 'Combined' : 'Separate';
-  if (showCharts) {
-    if (typeof echarts === 'undefined') setStatus('Chart library could not be loaded (offline?).', 'error');
-    else {
-      const agg = aggregate(raw, keys, state.agg, state.units);
-      lastX = agg.x;
-      renderCharts($('charts'), agg, keys, state.agg, keys.length < 2 ? 'stacked' : state.chartMode,
-        { zoom: zoomWin, onZoom: onChartZoom, titles });
-    }
-  } else renderTitles($('charts'), keys, titles);
+  const combined = state.chartMode === 'combined';
+  modeBtn.hidden = keys.length < 2;
+  modeBtn.setAttribute('aria-pressed', combined);
+  modeBtn.title = combined ? 'Separate charts' : 'Combine charts';
+  modeBtn.setAttribute('aria-label', modeBtn.title);
+  if (typeof echarts === 'undefined') setStatus('Chart library could not be loaded (offline?).', 'error');
+  else {
+    const agg = aggregate(raw, keys, state.agg, state.units);
+    lastX = agg.x;
+    renderCharts($('charts'), agg, keys, state.agg, keys.length < 2 ? 'stacked' : state.chartMode,
+      { zoom: zoomWin, onZoom: onChartZoom, titles });
+  }
 
   const z = raw.tz;
   $('model-used').textContent = modelUsedText(keys, raw.loadedS, rawWindow.E);
@@ -628,6 +671,17 @@ $('btn-chart-mode').onclick = () => {
   renderResults();
 };
 
+$('btn-fullscreen').onclick = () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else $('results').requestFullscreen().catch((e) => setStatus(`Full screen unavailable: ${e.message}`, 'error'));
+};
+document.addEventListener('fullscreenchange', () => {
+  const on = !!document.fullscreenElement;
+  $('btn-fullscreen').title = on ? 'Exit full screen' : 'Full screen';
+  $('btn-fullscreen').setAttribute('aria-pressed', on);
+  setTimeout(resizeCharts, 120);
+});
+
 let resizeTimer;
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(resizeCharts, 150); });
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => renderResults());
@@ -635,7 +689,7 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => rend
 // ---------- Boot ----------
 
 load();
-$('agg').value = state.agg;
+document.querySelector(`input[name="agg"][value="${state.agg}"]`).checked = true;
 renderLocation();
 syncPeriodUI();
 renderVars();
