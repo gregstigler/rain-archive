@@ -10,10 +10,10 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="css/app.css?v=15">
+  <link rel="stylesheet" href="css/app.css?v=19">
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js" defer></script>
-  <script type="module" src="js/app.js?v=15"></script>
+  <script type="module" src="js/app.js?v=19"></script>
 </head>
 <body>
   <header class="topbar" id="topbar">
@@ -64,7 +64,7 @@
         <div class="field">
           <span>End</span>
           <label class="check"><input id="end-now" type="checkbox"> Up to now</label>
-          <input id="end" type="datetime-local" step="3600" aria-label="End date and time">
+          <div class="row dt" id="end"><input type="date" required aria-label="End date"><select aria-label="End time"></select></div>
         </div>
         <div class="field">
           <span>Duration</span>
@@ -82,14 +82,14 @@
       </div>
 
       <div id="mode-range" hidden>
-        <label class="field">
+        <div class="field">
           <span>From</span>
-          <input id="range-start" type="datetime-local" step="3600">
-        </label>
-        <label class="field">
+          <div class="row dt" id="range-start"><input type="date" required aria-label="Start date"><select aria-label="Start time"></select></div>
+        </div>
+        <div class="field">
           <span>To</span>
-          <input id="range-end" type="datetime-local" step="3600">
-        </label>
+          <div class="row dt" id="range-end"><input type="date" required aria-label="End date"><select aria-label="End time"></select></div>
+        </div>
       </div>
     </div>
     <p id="period-summary" class="muted small"></p>
@@ -108,10 +108,12 @@
     </details>
 
     <details id="step-box" open>
-      <summary>Time step</summary>
-      <div class="seg" role="radiogroup" aria-label="Time step: one bar or point per hour, day, month or year">
+      <summary>Aggregation</summary>
+      <p class="muted small hint">Data summed or averaged per…</p>
+      <div class="seg" role="radiogroup" aria-label="Aggregate the data per hour, day, week, month or year">
         <label><input type="radio" name="agg" value="hour" checked><span>Hour</span></label>
         <label><input type="radio" name="agg" value="day"><span>Day</span></label>
+        <label><input type="radio" name="agg" value="week"><span>Week</span></label>
         <label><input type="radio" name="agg" value="month"><span>Month</span></label>
         <label><input type="radio" name="agg" value="year"><span>Year</span></label>
       </div>

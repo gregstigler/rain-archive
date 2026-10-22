@@ -1,15 +1,47 @@
 import {
   VARS, VAR_BY_KEY, QUICK_VARS, FAMILIES, MODELS, IFS_FROM, pre2017Source, defaultUnits, decimals, wmoLabel, compass,
-} from './vars.js?v=15';
+} from './vars.js?v=19';
 import {
-  HOUR, STEP_MS, STEPS, searchPlaces, resolvePoint, getElevation, fetchHourly, aggregate,
+  HOUR, STEP_MS, STEPS, bucketBounds, searchPlaces, resolvePoint, getElevation, fetchHourly, aggregate,
   zonedToUnix, unixToZonedInput, floorLocalHour, wallMs, tzOffset, fmtWall, fmtDuration,
   DURATION_UNITS, subtractDuration, bestDuration,
-} from './data.js?v=15';
-import { renderCharts, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=15';
-import { createRangeBar } from './rangebar.js?v=15';
+} from './data.js?v=19';
+import { renderCharts, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=19';
+import { createRangeBar } from './rangebar.js?v=19';
 
 const $ = (id) => document.getElementById(id);
+
+// Date + time pickers of the Period panel: a date field (required, so browsers show no "Clear"
+// button) and a time list in 15-minute steps. The wrapper element behaves like one input:
+// .value is "YYYY-MM-DDTHH:mm", .disabled, and a single 'change' event.
+document.querySelectorAll('.dt').forEach((el) => {
+  const [date, time] = el.children;
+  for (let m = 0; m < 24 * 60; m += 15) {
+    const v = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    time.add(new Option(v, v));
+  }
+  let last = '';
+  Object.defineProperty(el, 'value', {
+    get: () => (date.value ? `${date.value}T${time.value}` : last),
+    set: (v) => {
+      last = v || '';
+      const [d, t = '00:00'] = last.split('T');
+      date.value = d || '';
+      const [h, mi] = t.split(':').map(Number);
+      const q = Math.floor((mi || 0) / 15) * 15; // snap to 00/15/30/45
+      time.value = `${String(h || 0).padStart(2, '0')}:${String(q).padStart(2, '0')}`;
+    },
+  });
+  Object.defineProperty(el, 'disabled', { set: (b) => { date.disabled = b; time.disabled = b; }, get: () => date.disabled });
+  for (const c of [date, time]) {
+    c.addEventListener('change', (e) => {
+      e.stopPropagation();
+      if (!date.value) { el.value = last; return; } // an emptied date falls back to the previous one
+      last = el.value;
+      el.dispatchEvent(new Event('change'));
+    });
+  }
+});
 const STORE_KEY = 'rain-archive-state';
 const MIN_DATE = Date.UTC(1940, 0, 1) / 1000;
 const MAX_SPAN_DAYS = 366 * 20;
@@ -96,7 +128,7 @@ function updateTabs() {
   }
   $('tab-period').textContent = p;
   const first = state.vars[0] ? VAR_BY_KEY[state.vars[0]].label : 'None';
-  const aggTxt = { hour: 'hourly', day: 'daily', month: 'monthly', year: 'yearly' }[state.agg];
+  const aggTxt = { hour: 'per hour', day: 'per day', week: 'per week', month: 'per month', year: 'per year' }[state.agg];
   $('tab-data').textContent = `${first}${state.vars.length > 1 ? ` +${state.vars.length - 1}` : ''} · ${aggTxt}`;
 }
 
@@ -625,27 +657,30 @@ function applyVarFilter() {
   });
 }
 
-// ---------- Time step (hour → day → month → year) ----------
+// ---------- Aggregation (one bar per hour → day → week → month → year) ----------
+// Changing it only regroups the data; the displayed time window does not move.
 
-const STEP_LABEL = { hour: '/h', day: '/d', month: '/mo', year: '/y' };
-const STEP_NAME = { hour: 'per hour', day: 'per day', month: 'per month', year: 'per year' };
+const STEP_LABEL = { hour: '/h', day: '/d', week: '/wk', month: '/mo', year: '/y' };
+const STEP_NAME = { hour: 'per hour', day: 'per day', week: 'per week', month: 'per month', year: 'per year' };
 
 function syncStepUI() {
   document.querySelector(`input[name="agg"][value="${state.agg}"]`).checked = true;
   const i = STEPS.indexOf(state.agg);
   $('step-label').textContent = STEP_LABEL[state.agg];
-  $('step-label').title = `Time step: ${STEP_NAME[state.agg]}`;
+  $('step-label').title = `Data aggregated ${STEP_NAME[state.agg]}`;
   $('btn-finer').disabled = i === 0;
   $('btn-coarser').disabled = i === STEPS.length - 1;
-  $('btn-finer').title = i > 0 ? `Finer: ${STEP_NAME[STEPS[i - 1]]}` : 'Already the finest time step';
-  $('btn-coarser').title = i < STEPS.length - 1 ? `Coarser: ${STEP_NAME[STEPS[i + 1]]}` : 'Already the coarsest time step';
+  $('btn-finer').title = i > 0 ? `Aggregate ${STEP_NAME[STEPS[i - 1]]}` : 'Already the finest aggregation';
+  $('btn-coarser').title = i < STEPS.length - 1 ? `Aggregate ${STEP_NAME[STEPS[i + 1]]}` : 'Already the coarsest aggregation';
 }
 function setAgg(value) {
   state.agg = value;
   save();
   syncStepUI();
   updateTabs();
-  if (activeView && raw) applyView(activeView); else renderResults(); // re-fit the view to the new buckets
+  if (!raw) return;
+  renderResults();
+  fillAxis(); // complete the bars at both ends (a month or a year needs all of its hours)
 }
 document.querySelectorAll('input[name="agg"]').forEach((r) => { r.onchange = () => setAgg(r.value); });
 $('btn-finer').onclick = () => { const i = STEPS.indexOf(state.agg); if (i > 0) setAgg(STEPS[i - 1]); };
@@ -709,6 +744,12 @@ function axisAround(S, E) {
   const span = E - S;
   return { S: Math.max(MIN_DATE, floorLocalHour(S - span, tz())), E: Math.min(nowHour(), E + span) };
 }
+// Data needed to draw [S, E] with whole bars: widened to the bars that contain both ends.
+function wholeBars({ S, E }) {
+  const z = raw?.tz || tz();
+  const a = bucketBounds(wallMs(S, z), state.agg)[0], b = bucketBounds(wallMs(E - 1, z), state.agg)[1];
+  return { S: a / 1000 - tzOffset(a / 1000, z), E: b / 1000 - tzOffset(b / 1000, z) };
+}
 
 async function doFetch() {
   if (!state.loc) { setStatus('Search a place, use your position or pick one on the map to start.'); return; }
@@ -748,7 +789,7 @@ const queue = (fn) => (chain = chain.then(fn, fn));
 
 // Make `raw` cover [S, E]: extend it on either side, or replace it when the range is far away.
 // Returns true when `raw` changed.
-async function ensureData(S, E) {
+async function ensureData({ S, E }) {
   if (!raw) return false;
   const target = raw;
   S = Math.max(MIN_DATE, floorLocalHour(S, target.tz));
@@ -794,7 +835,8 @@ async function ensureData(S, E) {
 function trimRaw() {
   const len = axis.E - axis.S;
   if (raw.loadedE - raw.loadedS <= 4 * len) return;
-  const S = Math.max(raw.loadedS, axis.S - len), E = Math.min(raw.loadedE, axis.E + len);
+  const wb = wholeBars(axis); // never cut into a bar that is on screen
+  const S = Math.max(raw.loadedS, Math.min(wb.S, axis.S - len)), E = Math.min(raw.loadedE, Math.max(wb.E, axis.E + len));
   const idx = [];
   raw.times.forEach((t, i) => { if (t > S && t <= E) idx.push(i); });
   raw = { ...raw, times: idx.map((i) => raw.times[i]),
@@ -803,7 +845,7 @@ function trimRaw() {
 
 async function fillAxis() {
   const target = raw;
-  if (await queue(() => ensureData(axis.S, axis.E)) && raw && raw !== target) renderResults();
+  if (await queue(() => ensureData(wholeBars(axis))) && raw && raw !== target) renderResults();
 }
 
 // After a zoom or pan settles: re-centre the axis on the view when the view nears an edge that can
@@ -824,7 +866,7 @@ async function relayout() {
     return;
   }
   const want = axisAround(vS, vE);
-  await queue(() => ensureData(want.S, want.E));
+  await queue(() => ensureData(wholeBars(want)));
   if (!raw) return;
   axis = want;
   trimRaw();
@@ -890,7 +932,7 @@ function setActiveView(v) {
 // Number of bars a view shows for the current time step (the last one may be partial).
 function viewBuckets(view) {
   const h = Number(view);
-  return { hour: h, day: Math.round(h / 24), month: Math.round(h / 730.5), year: Math.round(h / 8766) }[state.agg] || 1;
+  return { hour: h, day: Math.round(h / 24), week: Math.round(h / 168), month: Math.round(h / 730.5), year: Math.round(h / 8766) }[state.agg] || 1;
 }
 
 // Bars that cover the instants just after `from` and just before `to` (wall ms).
@@ -930,7 +972,7 @@ async function applyView(view) {
     S = E - (viewBuckets(view) + 1) * stepSec;
   }
   const want = axisAround(S, E);
-  await queue(() => ensureData(want.S, want.E));
+  await queue(() => ensureData(wholeBars(want)));
   if (activeView !== view || !raw) return; // the user moved on meanwhile
   axis = want;
   trimRaw();
@@ -1038,7 +1080,9 @@ function renderResults() {
   modeBtn.setAttribute('aria-label', modeBtn.title);
   if (typeof echarts === 'undefined') { setStatus('Chart library could not be loaded (offline?).', 'error'); return false; }
 
-  const agg = aggregate(raw, keys, state.agg, state.units, zoomWin ? zoomWin.startMs - 1 : -Infinity);
+  // Running totals start with the bar that contains the left edge of the view.
+  const cumFrom = zoomWin ? bucketBounds(zoomWin.startMs + 1, state.agg)[0] : -Infinity;
+  const agg = aggregate(raw, keys, state.agg, state.units, cumFrom);
   lastX = agg.x; lastStart = agg.start; lastEnd = agg.end;
   // Axis range widened to whole bars, so the first and last bars are never cut in half.
   let range;

@@ -1,7 +1,7 @@
 // ECharts rendering: one synced chart per variable ("stacked") or a single multi-axis chart ("combined").
 // When only the data or the time range changes, existing charts are updated in place (no flicker).
-import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=15';
-import { fmtWall, STEP_MS } from './data.js?v=15';
+import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=19';
+import { fmtWall, STEP_MS } from './data.js?v=19';
 
 const PALETTE = ['#2f7fd8', '#e8743b', '#19a979', '#945ecf', '#d4526e', '#13a4b4', '#ce8f1f', '#6b7a8f'];
 const GROUP = 'rain-archive';
@@ -20,65 +20,102 @@ const PINCH_TOLERANCE = 0.15; // finger spacing may change ±15 % during a two-f
 export const chartRange = { min: 0, max: 1, minSpan: 3 * 3600e3 };
 
 // ---------- Axis labels ----------
-// Bottom labels depend on the visible span; weekday labels on top only when days are readable.
+// Bottom ticks are evenly spaced in a calendar unit chosen from the visible span and the chart width
+// (every hour, 6 h, 12 h, day, week, month, 3 or 6 months, year, 2/5/10 years), and every tick is
+// labelled. Weekdays are written diagonally on top only when days are readable. Both axes have dark
+// tick marks joining each label to its axis.
 
 const WD = ['Sun.', 'Mon.', 'Tue.', 'Wed.', 'Thu.', 'Fri.', 'Sat.'];
 const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const pad = (n) => String(n).padStart(2, '0');
-let labelMode = 'days';
-let topShown = true;
+const Y = 365.2425 * DAY;
+// [approximate interval ms, kind, minimum px between two labels, count]
+const TICK_UNITS = [
+  [3600e3, 'h', 44, 1], [3 * 3600e3, 'h', 44, 3], [6 * 3600e3, 'h', 44, 6], [12 * 3600e3, 'h', 44, 12],
+  [DAY, 'd', 48, 1], [2 * DAY, 'd', 48, 2], [7 * DAY, 'w', 48, 1],
+  [Y / 12, 'm', 34, 1], [Y / 4, 'm', 34, 3], [Y / 2, 'm', 34, 6],
+  [Y, 'y', 38, 1], [2 * Y, 'y', 38, 2], [5 * Y, 'y', 38, 5], [10 * Y, 'y', 38, 10],
+];
 
-function modeFor(spanMs) {
-  const d = spanMs / DAY;
-  if (d > 6 * 365) return 'years';      // 2019 2020 2021
-  if (d > 540) return 'monthLetters';    // 2025 F M A M J …
-  if (d > 60) return 'months';           // 2025 Feb Mar Apr …
-  if (d > 4) return 'days';              // 1 Jan 2 Jan 3 Jan
-  return 'hours';                        // 1 Jan 06:00 12:00 18:00 2 Jan
+// Tick positions (wall ms) between min and max, aligned on the calendar: hours on multiples of n,
+// every n-th day, Mondays, months/years on multiples of n.
+function calendarTicks(min, max, [, kind, , n]) {
+  const out = [];
+  if (kind === 'h' || kind === 'd') {
+    const unit = (kind === 'h' ? 3600e3 : DAY) * n;
+    for (let t = Math.ceil(min / unit) * unit; t <= max; t += unit) out.push(t);
+  } else if (kind === 'w') {
+    let t = Math.ceil(min / DAY) * DAY;
+    t += ((8 - new Date(t).getUTCDay()) % 7) * DAY; // next Monday
+    for (; t <= max; t += 7 * DAY) out.push(t);
+  } else {
+    const d = new Date(min);
+    let y = d.getUTCFullYear(), m = kind === 'm' ? d.getUTCMonth() : 0;
+    if (kind === 'm') m = Math.floor(m / n) * n; else y = Math.floor(y / n) * n;
+    for (let i = 0; i < 2000; i++) {
+      const t = Date.UTC(y, m, 1);
+      if (t > max) break;
+      if (t >= min) out.push(t);
+      if (kind === 'm') m += n; else y += n;
+    }
+  }
+  return out;
 }
-const topFor = (spanMs, gran) => (gran === 'hour' || gran === 'day') && spanMs <= 45 * DAY;
+let tickUnit = TICK_UNITS[3];
+let topShown = true;
+let plotWidth = 260;
+
+function unitFor(spanMs) {
+  const pxPerMs = plotWidth / spanMs;
+  return TICK_UNITS.find(([ms, , px]) => ms * pxPerMs >= px) || TICK_UNITS[TICK_UNITS.length - 1];
+}
+const topFor = (spanMs, gran) => (gran === 'hour' || gran === 'day') && (DAY * plotWidth) / spanMs >= 14;
 
 function bottomLabel(ms) {
   const d = new Date(ms);
   const isDay = d.getUTCHours() === 0 && d.getUTCMinutes() === 0;
   const isMonth = isDay && d.getUTCDate() === 1;
   const isYear = isMonth && d.getUTCMonth() === 0;
-  switch (labelMode) {
-    case 'years': return isYear ? String(d.getUTCFullYear()) : '';
-    case 'monthLetters': return isYear ? String(d.getUTCFullYear()) : isMonth ? MO[d.getUTCMonth()][0] : '';
-    case 'months': return isYear ? String(d.getUTCFullYear()) : isMonth ? MO[d.getUTCMonth()] : '';
-    case 'days': return isDay ? `${d.getUTCDate()} ${MO[d.getUTCMonth()]}` : '';
-    default: return isDay ? `${d.getUTCDate()} ${MO[d.getUTCMonth()]}` : `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
-  }
+  const kind = tickUnit[1];
+  if (kind === 'y') return String(d.getUTCFullYear());
+  if (kind === 'm') return isYear ? String(d.getUTCFullYear()) : MO[d.getUTCMonth()];
+  if (kind === 'h' && !isDay) return `${pad(d.getUTCHours())}:00`;
+  return `${d.getUTCDate()} ${MO[d.getUTCMonth()]}`;
 }
 const topLabel = (ms) => WD[new Date(ms).getUTCDay()];
+
+// Visible part of the axis (wall ms); imposed ticks are limited to it, otherwise ECharts draws the
+// labels of ticks lying just outside the view at the plot edges.
+const view = { s: 0, e: 1 };
 
 function xAxes(theme, gran) {
   const range = { min: chartRange.min, max: chartRange.max };
   const days = gran === 'hour' || gran === 'day';
+  const ticks = calendarTicks(view.s, view.e, tickUnit); // imposed, so they stay perfectly regular
   return [
     {
       type: 'time', ...range, position: 'bottom',
-      axisLabel: { color: theme.muted, fontSize: 11, hideOverlap: true, formatter: bottomLabel },
+      axisLabel: { color: theme.muted, fontSize: 11, hideOverlap: true, formatter: bottomLabel, margin: 3, customValues: ticks },
+      axisTick: { show: true, length: 5, lineStyle: { color: theme.text }, customValues: ticks },
       axisLine: { lineStyle: { color: theme.line } },
       splitLine: { show: !topShown, lineStyle: { color: theme.grid } },
     },
     {
       // Weekdays, written diagonally above the chart; their tick lines run down through the plot.
       type: 'time', ...range, position: 'top', show: days && topShown, minInterval: DAY, maxInterval: DAY,
-      axisLabel: { color: theme.muted, fontSize: 10, rotate: 45, hideOverlap: true, formatter: topLabel, margin: 4 },
-      axisTick: { show: true, length: 5, lineStyle: { color: theme.line } },
+      axisLabel: { color: theme.muted, fontSize: 10, rotate: 45, hideOverlap: true, formatter: topLabel, margin: 2 },
+      axisTick: { show: true, length: 6, lineStyle: { color: theme.text } },
       axisLine: { show: false },
       splitLine: { show: true, lineStyle: { color: theme.grid } },
     },
   ];
 }
 
-// Called after each zoom/pan: switch label style when the visible span crosses a threshold.
-function refreshLabels(chart, spanMs, gran, theme) {
-  const m = modeFor(spanMs), t = topFor(spanMs, gran);
-  if (m === labelMode && t === topShown) return;
-  labelMode = m; topShown = t;
+// Called after each zoom/pan: recompute the ticks of the new visible part (and their spacing).
+function refreshLabels(chart, startMs, endMs, gran, theme) {
+  view.s = startMs; view.e = endMs;
+  tickUnit = unitFor(endMs - startMs);
+  topShown = topFor(endMs - startMs, gran);
   for (const c of instances) c.setOption({ xAxis: xAxes(theme, gran) });
 }
 
@@ -172,15 +209,18 @@ function fmtVal(v, unit) {
   return `${v.toFixed(decimals(unit))} ${unit}`;
 }
 
-// Tooltip header for the bar covering [start, end) (wall ms).
-function fmtHeader(start, end, gran, hours) {
+// Tooltip header for the bar covering [start, end) (wall ms), as precise as the aggregation level.
+// A bar still running (current day, week, month…) says up to when it has data.
+function fmtHeader(start, end, last, gran) {
   const d = new Date(start);
-  const partial = (full) => (hours < full ? ` <span style="opacity:.7">(${hours} h)</span>` : '');
-  if (gran === 'year') return `${d.getUTCFullYear()}${partial(8760)}`;
-  if (gran === 'month') return `${MO[d.getUTCMonth()]} ${d.getUTCFullYear()}${partial(672)}`;
-  if (gran === 'day') return fmtWall(start, false) + partial(24);
-  const hm = (ms) => fmtWall(ms, true, false).split(' ').pop();
-  return `${fmtWall(end)} <span style="opacity:.7">(${hm(start)}–${hm(end)})</span>`;
+  const dm = (ms) => { const x = new Date(ms); return `${x.getUTCDate()} ${MO[x.getUTCMonth()]}`; };
+  const hh = (ms) => `${pad(new Date(ms).getUTCHours())}:00`;
+  const soFar = last < end ? ` <span style="opacity:.7">(so far: until ${dm(last)} ${hh(last)})</span>` : '';
+  if (gran === 'year') return `${d.getUTCFullYear()}${soFar}`;
+  if (gran === 'month') return `${MO[d.getUTCMonth()]} ${d.getUTCFullYear()}${soFar}`;
+  if (gran === 'week') return `${dm(start)} – ${dm(end - DAY)} ${new Date(end - DAY).getUTCFullYear()}${soFar}`;
+  if (gran === 'day') return `${fmtWall(start, false)}${soFar}`;
+  return `${fmtWall(start, false)} ${hh(start)}–${hh(end)}`;
 }
 
 function tooltipLine(color, label, text) {
@@ -261,7 +301,7 @@ function baseOption(gran, theme, tooltipFmt, gridRight, gridLeft, zoom) {
     dataZoom: [
       // Touch screens: built-in drag/pinch off; one finger shows values, two fingers pan/zoom (attachTouch).
       { type: 'inside', id: 'dz-in', xAxisIndex: [0, 1], filterMode, disabled: IS_TOUCH, zoomOnMouseWheel: true, moveOnMouseMove: true,
-        minValueSpan: gran === 'hour' ? step * 3 : step, ...win },
+        minValueSpan: 3 * 3600e3, ...win }, // the same for every aggregation level, so changing it never moves the view
     ],
   };
 }
@@ -285,16 +325,19 @@ export function renderCharts(container, agg, keys, gran, mode, opts = {}) {
   const titles = opts.titles || {};
   const step = STEP_MS[gran];
   const range = opts.range || { min: agg.start[0], max: agg.end[agg.end.length - 1] };
-  Object.assign(chartRange, range, { minSpan: gran === 'hour' ? 3 * 3600e3 : step });
+  Object.assign(chartRange, range, { minSpan: 3 * 3600e3 });
   const zoom = opts.zoom;
   const span = zoom ? zoom.endMs - zoom.startMs : range.max - range.min;
-  labelMode = modeFor(span);
+  plotWidth = Math.max(120, container.clientWidth - (mode === 'combined' ? 140 : 112));
+  tickUnit = unitFor(span);
   topShown = topFor(span, gran);
+  view.s = zoom ? Math.max(range.min, zoom.startMs) : range.min;
+  view.e = zoom ? Math.min(range.max, zoom.endMs) : range.max;
 
   const makeTooltip = (ks) => (params) => {
     const i = params[0]?.dataIndex;
     if (i == null) return '';
-    return `<div style="margin-bottom:4px">${fmtHeader(agg.start[i], agg.end[i], gran, hours[i])}</div>` +
+    return `<div style="margin-bottom:4px">${fmtHeader(agg.start[i], agg.end[i], agg.last[i], gran)}</div>` +
       ks.map((k) => tooltipLine(color(k), VAR_BY_KEY[k].label, describe(k, series[k], i, gran))).join('');
   };
 
@@ -366,7 +409,7 @@ export function renderCharts(container, agg, keys, gran, mode, opts = {}) {
       const dz = chart.getOption().dataZoom[0];
       const startMs = min + (dz.start / 100) * (max - min);
       const endMs = min + (dz.end / 100) * (max - min);
-      refreshLabels(chart, endMs - startMs, gran, theme);
+      refreshLabels(chart, startMs, endMs, gran, theme);
       opts.onZoom?.({ startMs, endMs });
     });
   };

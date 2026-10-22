@@ -11,7 +11,6 @@ const EDGE_ZONE = 18;     // px around each edge where a long press grabs that e
 
 const H = 3600e3, D = 24 * H;
 const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const pad = (n) => String(n).padStart(2, '0');
 
 // Tick spacing candidates: [kind, amount]. Months/years are calendar-aligned.
 const TICK_STEPS = [['h', 1], ['h', 3], ['h', 6], ['h', 12], ['d', 1], ['d', 2], ['d', 7], ['m', 1], ['m', 3], ['m', 6],
@@ -44,7 +43,7 @@ function fmtBound(ms, unit, withTime) {
   if (unit === 'year') return String(d.getUTCFullYear());
   if (unit === 'month') return `${MO[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
   const s = `${d.getUTCDate()} ${MO[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
-  return withTime ? `${s} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}` : s;
+  return withTime ? `${s} ${d.getUTCHours()}h` : s; // whole hours, never minutes
 }
 
 export function createRangeBar(el, { onChange, onEnd, minSpan }) {
@@ -67,7 +66,7 @@ export function createRangeBar(el, { onChange, onEnd, minSpan }) {
     const w = W(), l = toX(start), r = toX(end);
     // The window is [start, end): an hourly end is shown as is (end of the last hour), otherwise
     // the end label names the last day, month or year included.
-    const time = unit === 'hour' && w > 300;
+    const time = unit === 'hour' && max - min <= 3 * D; // hours only when the bar spans 3 days or less
     labL.textContent = fmtBound(start, unit, time);
     labR.textContent = fmtBound(unit === 'hour' ? end : end - 1, unit, time);
     const lw = labL.offsetWidth, rw = labR.offsetWidth;

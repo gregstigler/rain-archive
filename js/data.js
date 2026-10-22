@@ -1,5 +1,5 @@
 // Time-zone helpers, Open-Meteo requests and aggregation.
-import { VAR_BY_KEY, baseUnit, displayUnit, convert } from './vars.js?v=15';
+import { VAR_BY_KEY, baseUnit, displayUnit, convert } from './vars.js?v=19';
 
 const ARCHIVE = 'https://archive-api.open-meteo.com/v1/archive';
 const FORECAST = 'https://api.open-meteo.com/v1/forecast';
@@ -9,8 +9,8 @@ const REVERSE = 'https://nominatim.openstreetmap.org/reverse';
 
 export const HOUR = 3600;
 // Typical length of one bar for each time step (ms); months and years vary, this is for spacing.
-export const STEP_MS = { hour: 3600e3, day: 86400e3, month: 30.436875 * 86400e3, year: 365.2425 * 86400e3 };
-export const STEPS = ['hour', 'day', 'month', 'year'];
+export const STEP_MS = { hour: 3600e3, day: 86400e3, week: 7 * 86400e3, month: 30.436875 * 86400e3, year: 365.2425 * 86400e3 };
+export const STEPS = ['hour', 'day', 'week', 'month', 'year'];
 const FORECAST_PAST_DAYS = 92;
 
 // ---------- Time zones ----------
@@ -245,36 +245,47 @@ function reduce(kind, arr) {
 }
 
 /**
- * mode: 'hour' | 'day' | 'month' | 'year' | 'total'.
- * Returns { x, start, end: [wall ms], hours: [hours per bucket], series: {key: {unit, val[], min[], max[], cum[]|null, n[]}} }.
+ * mode: 'hour' | 'day' | 'week' | 'month' | 'year' | 'total'.
+ * Returns { x, start, end, last: [wall ms], hours: [hours per bucket], series: {key: {unit, val[], min[], max[], cum[]|null, n[]}} }.
+ * last is the end of the latest hour with data in the bucket (before `end` when the bucket is still running).
  * Each bucket covers [start, end) in local wall time and is drawn at its middle x.
  * Running totals (cum) start at the first bucket that begins at or after cumFromMs.
  * Values are converted to display units.
  */
+// The bar [start, end) (wall ms) of an aggregation level that contains the wall instant w.
+// Weeks start on Monday.
+export function bucketBounds(w, mode) {
+  const DAY = 86400e3;
+  if (mode === 'hour') { const s = Math.floor(w / 3600e3) * 3600e3; return [s, s + 3600e3]; }
+  if (mode === 'day') { const s = Math.floor(w / DAY) * DAY; return [s, s + DAY]; }
+  if (mode === 'week') {
+    const day = Math.floor(w / DAY) * DAY;
+    const s = day - ((new Date(day).getUTCDay() + 6) % 7) * DAY;
+    return [s, s + 7 * DAY];
+  }
+  const d = new Date(w), y = d.getUTCFullYear(), m = d.getUTCMonth();
+  return mode === 'month' ? [Date.UTC(y, m, 1), Date.UTC(y, m + 1, 1)] : [Date.UTC(y, 0, 1), Date.UTC(y + 1, 0, 1)];
+}
+
 export function aggregate(raw, keys, mode, units, cumFromMs = -Infinity) {
   const { times, values, tz } = raw;
-  const buckets = []; // {start, end, idx: []}
+  const buckets = []; // {start, end, last, idx: []}; last = end of the latest hour with data
   if (mode === 'hour') {
     // An hourly value stamped hh:00 covers the hour before it.
-    times.forEach((t, i) => { const e = wallMs(t, tz); buckets.push({ start: e - 3600e3, end: e, idx: [i] }); });
-  } else if (mode === 'day' || mode === 'month' || mode === 'year') {
+    times.forEach((t, i) => { const e = wallMs(t, tz); buckets.push({ start: e - 3600e3, end: e, last: e, idx: [i] }); });
+  } else if (mode !== 'total') {
     const byKey = new Map();
     times.forEach((t, i) => {
-      // A stamp at 00:00 belongs to the day (month, year) that just ended.
-      const w = wallMs(t - 1, tz);
-      let start, end;
-      if (mode === 'day') { start = Math.floor(w / 86400e3) * 86400e3; end = start + 86400e3; }
-      else {
-        const d = new Date(w), y = d.getUTCFullYear(), m = d.getUTCMonth();
-        start = mode === 'month' ? Date.UTC(y, m, 1) : Date.UTC(y, 0, 1);
-        end = mode === 'month' ? Date.UTC(y, m + 1, 1) : Date.UTC(y + 1, 0, 1);
-      }
+      // A stamp at 00:00 belongs to the day (week, month, year) that just ended.
+      const [start, end] = bucketBounds(wallMs(t - 1, tz), mode);
       if (!byKey.has(start)) { byKey.set(start, { start, end, idx: [] }); buckets.push(byKey.get(start)); }
-      byKey.get(start).idx.push(i);
+      const b = byKey.get(start);
+      b.idx.push(i);
+      b.last = wallMs(t, tz);
     });
   } else {
     const e = times.length ? wallMs(times[times.length - 1], tz) : 0;
-    buckets.push({ start: e, end: e, idx: times.map((_, i) => i) });
+    buckets.push({ start: e, end: e, last: e, idx: times.map((_, i) => i) });
   }
 
   const series = {};
@@ -301,6 +312,6 @@ export function aggregate(raw, keys, mode, units, cumFromMs = -Infinity) {
   }
   return {
     x: buckets.map((b) => (b.start + b.end) / 2), start: buckets.map((b) => b.start), end: buckets.map((b) => b.end),
-    hours: buckets.map((b) => b.idx.length), series,
+    last: buckets.map((b) => b.last), hours: buckets.map((b) => b.idx.length), series,
   };
 }
