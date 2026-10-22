@@ -1,7 +1,7 @@
 // ECharts rendering: one synced chart per variable ("stacked") or a single multi-axis chart ("combined").
 // When only the data or the time range changes, existing charts are updated in place (no flicker).
-import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=20';
-import { fmtWall, STEP_MS } from './data.js?v=20';
+import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=21';
+import { fmtWall, STEP_MS } from './data.js?v=21';
 
 const PALETTE = ['#2f7fd8', '#e8743b', '#19a979', '#945ecf', '#d4526e', '#13a4b4', '#ce8f1f', '#6b7a8f'];
 const GROUP = 'rain-archive';
@@ -30,11 +30,12 @@ const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct'
 const pad = (n) => String(n).padStart(2, '0');
 const Y = 365.2425 * DAY;
 // [approximate interval ms, kind, minimum px between two labels, count]
+// The px values are about one label's width plus a small gap ("15:00" ≈ 30 px, "21 Sep" ≈ 36 px).
 const TICK_UNITS = [
-  [3600e3, 'h', 44, 1], [3 * 3600e3, 'h', 44, 3], [6 * 3600e3, 'h', 44, 6], [12 * 3600e3, 'h', 44, 12],
-  [DAY, 'd', 48, 1], [2 * DAY, 'd', 48, 2], [7 * DAY, 'w', 48, 1],
-  [Y / 12, 'm', 34, 1], [Y / 4, 'm', 34, 3], [Y / 2, 'm', 34, 6],
-  [Y, 'y', 38, 1], [2 * Y, 'y', 38, 2], [5 * Y, 'y', 38, 5], [10 * Y, 'y', 38, 10],
+  [3600e3, 'h', 36, 1], [2 * 3600e3, 'h', 36, 2], [3 * 3600e3, 'h', 36, 3], [6 * 3600e3, 'h', 36, 6], [12 * 3600e3, 'h', 36, 12],
+  [DAY, 'd', 44, 1], [2 * DAY, 'd', 44, 2], [7 * DAY, 'w', 44, 1],
+  [Y / 12, 'm', 30, 1], [Y / 4, 'm', 30, 3], [Y / 2, 'm', 30, 6],
+  [Y, 'y', 34, 1], [2 * Y, 'y', 34, 2], [5 * Y, 'y', 34, 5], [10 * Y, 'y', 34, 10],
 ];
 
 // Tick positions (wall ms) between min and max, aligned on the calendar: hours on multiples of n,
@@ -103,11 +104,11 @@ function xAxes(theme, gran) {
   const weekdays = calendarTicks(view.s, view.e, [DAY, 'd', 0, 1]);
   return [
     {
-      // Minor scale: every tick labelled, light grid lines. Tick marks join each label to the axis.
+      // Minor scale: every tick labelled, light grid lines (no tick marks below the axis).
       type: 'time', ...range, position: 'bottom',
-      axisLabel: { color: theme.muted, fontSize: 11, hideOverlap: true, formatter: bottomLabelStyled, margin: 7, customValues: ticks,
+      axisLabel: { color: theme.muted, fontSize: 11, hideOverlap: true, formatter: bottomLabelStyled, margin: 6, customValues: ticks,
         rich: { major: { color: theme.major, fontWeight: 700, fontSize: 11 } } },
-      axisTick: { show: true, length: 6, lineStyle: { color: theme.text }, customValues: ticks },
+      axisTick: { show: false, customValues: ticks },
       axisLine: { lineStyle: { color: theme.line } },
       splitLine: { show: true, lineStyle: { color: theme.grid } },
     },
@@ -217,7 +218,17 @@ export function disposeCharts() {
   current = null;
 }
 
-export function resizeCharts() { instances.forEach((c) => c.resize()); }
+// Real plot width (px), measured on the first chart; the label density depends on it.
+function measurePlot() {
+  const w = instances[0]?.getModel().getComponent('grid')?.coordinateSystem?.getRect().width;
+  if (w > 0) plotWidth = w;
+}
+
+export function resizeCharts() {
+  instances.forEach((c) => c.resize());
+  measurePlot();
+  if (current) refreshLabels(null, view.s, view.e, current.gran, current.theme);
+}
 
 export function setZoom(startMs, endMs) {
   instances[0]?.dispatchAction({ type: 'dataZoom', startValue: startMs, endValue: endMs }); // connected charts follow
@@ -347,7 +358,7 @@ export function renderCharts(container, agg, keys, gran, mode, opts = {}) {
   Object.assign(chartRange, range, { minSpan: 3 * 3600e3 });
   const zoom = opts.zoom;
   const span = zoom ? zoom.endMs - zoom.startMs : range.max - range.min;
-  plotWidth = Math.max(120, container.clientWidth - (mode === 'combined' ? 140 : 112));
+  if (!instances.length) plotWidth = Math.max(120, container.clientWidth - (mode === 'combined' ? 140 : 112)); // first guess
   tickUnit = unitFor(span);
   topShown = topFor(span, gran);
   view.s = zoom ? Math.max(range.min, zoom.startMs) : range.min;
@@ -412,9 +423,15 @@ export function renderCharts(container, agg, keys, gran, mode, opts = {}) {
 
   // Same layout as now: update in place, so the screen does not flash.
   const sig = [mode, gran, keys.join(','), narrow, theme.text].join('|');
+  // After drawing: measure the real plot width and re-space the labels if the estimate was off.
+  const fitLabels = () => {
+    measurePlot();
+    if (unitFor(view.e - view.s) !== tickUnit) refreshLabels(null, view.s, view.e, gran, theme);
+  };
   if (current && current.sig === sig && instances.length === charts.length) {
     charts.forEach((c, i) => instances[i].setOption(c.opt));
     keys.forEach((k) => fillTitle(current.titleEls[k], titles[k]));
+    fitLabels();
     return;
   }
 
@@ -447,5 +464,6 @@ export function renderCharts(container, agg, keys, gran, mode, opts = {}) {
   });
   keys.forEach((k) => fillTitle(titleEls[k], titles[k]));
   if (mode !== 'combined') echarts.connect(GROUP);
-  current = { sig, titleEls };
+  current = { sig, titleEls, gran, theme };
+  fitLabels();
 }
