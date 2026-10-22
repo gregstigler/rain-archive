@@ -1,7 +1,7 @@
 // ECharts rendering: one synced chart per variable ("stacked") or a single multi-axis chart ("combined").
 // When only the data or the time range changes, existing charts are updated in place (no flicker).
-import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=21';
-import { fmtWall, STEP_MS } from './data.js?v=21';
+import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=23';
+import { fmtWall, STEP_MS } from './data.js?v=23';
 
 const PALETTE = ['#2f7fd8', '#e8743b', '#19a979', '#945ecf', '#d4526e', '#13a4b4', '#ce8f1f', '#6b7a8f'];
 const GROUP = 'rain-archive';
@@ -70,7 +70,9 @@ function unitFor(spanMs) {
   const pxPerMs = plotWidth / spanMs;
   return TICK_UNITS.find(([ms, , px]) => ms * pxPerMs >= px) || TICK_UNITS[TICK_UNITS.length - 1];
 }
-const topFor = (spanMs, gran) => (gran === 'hour' || gran === 'day') && (DAY * plotWidth) / spanMs >= 14;
+// Weekdays on top whenever the bottom labels name days ("19 Oct"), whatever the aggregation level.
+const topFor = (spanMs) => ['h', 'd', 'w'].includes(unitFor(spanMs)[1]);
+const GRID_TOP = { on: 50, off: 14 }; // room for the diagonal weekdays
 
 function bottomLabel(ms) {
   const d = new Date(ms);
@@ -97,7 +99,6 @@ const bottomLabelStyled = (ms) => (majors.has(ms) ? `{major|${bottomLabel(ms)}}`
 
 function xAxes(theme, gran) {
   const range = { min: chartRange.min, max: chartRange.max };
-  const days = gran === 'hour' || gran === 'day';
   const ticks = calendarTicks(view.s, view.e, tickUnit); // imposed, so they stay perfectly regular
   const major = MAJOR_OF[tickUnit[1]] ? calendarTicks(view.s, view.e, MAJOR_OF[tickUnit[1]]) : [];
   majors = new Set(major);
@@ -114,7 +115,7 @@ function xAxes(theme, gran) {
     },
     {
       // Weekdays, written diagonally above the chart, each joined to the plot by a dark tick mark.
-      type: 'time', ...range, position: 'top', show: days && topShown,
+      type: 'time', ...range, position: 'top', show: topShown,
       axisLabel: { color: theme.muted, fontSize: 10, rotate: 45, hideOverlap: true, formatter: topLabel, margin: 11, customValues: weekdays },
       axisTick: { show: true, length: 10, lineStyle: { color: theme.text }, customValues: weekdays },
       axisLine: { show: false },
@@ -135,8 +136,9 @@ function xAxes(theme, gran) {
 function refreshLabels(chart, startMs, endMs, gran, theme) {
   view.s = startMs; view.e = endMs;
   tickUnit = unitFor(endMs - startMs);
-  topShown = topFor(endMs - startMs, gran);
-  for (const c of instances) c.setOption({ xAxis: xAxes(theme, gran) });
+  topShown = topFor(endMs - startMs);
+  const grid = { top: topShown ? GRID_TOP.on : GRID_TOP.off };
+  for (const c of instances) c.setOption({ xAxis: xAxes(theme, gran), grid });
 }
 
 // ---------- Touch gestures ----------
@@ -320,7 +322,7 @@ function baseOption(gran, theme, tooltipFmt, gridRight, gridLeft, zoom) {
     useUTC: true, // x values are wall-clock times of the location, encoded as UTC
     animation: false,
     textStyle: { color: theme.text },
-    grid: { left: gridLeft, right: gridRight, top: gran === 'hour' || gran === 'day' ? 50 : 14, bottom: 28 },
+    grid: { left: gridLeft, right: gridRight, top: topShown ? GRID_TOP.on : GRID_TOP.off, bottom: 28 },
     tooltip: {
       trigger: 'axis', confine: true, triggerOn: 'mousemove|click',
       backgroundColor: theme.card, borderColor: theme.line, textStyle: { color: theme.text, fontSize: 12 },
@@ -360,7 +362,7 @@ export function renderCharts(container, agg, keys, gran, mode, opts = {}) {
   const span = zoom ? zoom.endMs - zoom.startMs : range.max - range.min;
   if (!instances.length) plotWidth = Math.max(120, container.clientWidth - (mode === 'combined' ? 140 : 112)); // first guess
   tickUnit = unitFor(span);
-  topShown = topFor(span, gran);
+  topShown = topFor(span);
   view.s = zoom ? Math.max(range.min, zoom.startMs) : range.min;
   view.e = zoom ? Math.min(range.max, zoom.endMs) : range.max;
 

@@ -180,11 +180,19 @@ details.sub > summary { font-weight: 400; }
 .view-btns .btn.active { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 .tool-icons { display: flex; gap: 4px; margin-left: auto; }
 
-/* Full screen: the results block fills the screen, charts share the height. */
-#results:fullscreen { background: var(--bg); padding: 12px 4%; overflow: auto; }
-#results:fullscreen .chart { height: max(160px, calc((100vh - 70px) / var(--n, 1) - 44px)); }
-#results:fullscreen .chart.combined { height: calc(100vh - 80px - var(--n, 1) * 40px); }
-#results:fullscreen #source-note { display: none; }
+/* Full screen (real, or the .fs fallback for browsers that refuse it): a column where the toolbar,
+   titles and time bar keep their size and the charts share whatever height is left. */
+#results:fullscreen, #results.fs {
+  display: flex; flex-direction: column; height: 100vh; height: 100dvh; box-sizing: border-box;
+  background: var(--bg); padding: 8px 3% 6px; overflow: hidden;
+}
+#results.fs { position: fixed; inset: 0; z-index: 900; width: auto; }
+:is(#results:fullscreen, #results.fs) .charts-wrap { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+:is(#results:fullscreen, #results.fs) #charts { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+:is(#results:fullscreen, #results.fs) .chart,
+:is(#results:fullscreen, #results.fs) .chart.last,
+:is(#results:fullscreen, #results.fs) .chart.combined { flex: 1 1 0; min-height: 110px; height: auto; }
+:is(#results:fullscreen, #results.fs) .rangebar { flex: 0 0 auto; }
 
 .status { font-size: 14px; }
 .status.error { color: var(--danger); }

@@ -1,13 +1,13 @@
 import {
   VARS, VAR_BY_KEY, QUICK_VARS, FAMILIES, MODELS, IFS_FROM, pre2017Source, defaultUnits, decimals, wmoLabel, compass,
-} from './vars.js?v=21';
+} from './vars.js?v=23';
 import {
   HOUR, STEP_MS, STEPS, bucketBounds, searchPlaces, resolvePoint, getElevation, fetchHourly, aggregate,
   zonedToUnix, unixToZonedInput, floorLocalHour, wallMs, tzOffset, fmtWall, fmtDuration,
   DURATION_UNITS, subtractDuration, bestDuration,
-} from './data.js?v=21';
-import { renderCharts, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=21';
-import { createRangeBar } from './rangebar.js?v=21';
+} from './data.js?v=23';
+import { renderCharts, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=23';
+import { createRangeBar } from './rangebar.js?v=23';
 
 const $ = (id) => document.getElementById(id);
 
@@ -1071,7 +1071,7 @@ function renderResults() {
   const titles = buildTitles(keys);
 
   $('view-btns').hidden = false;
-  $('btn-fullscreen').hidden = !document.fullscreenEnabled;
+  $('btn-fullscreen').hidden = false;
   const modeBtn = $('btn-chart-mode');
   const combined = state.chartMode === 'combined';
   modeBtn.hidden = keys.length < 2;
@@ -1106,16 +1106,26 @@ $('btn-chart-mode').onclick = () => {
   renderResults();
 };
 
-$('btn-fullscreen').onclick = () => {
-  if (document.fullscreenElement) document.exitFullscreen();
-  else $('results').requestFullscreen().catch((e) => setStatus(`Full screen unavailable: ${e.message}`, 'error'));
-};
-document.addEventListener('fullscreenchange', () => {
-  const on = !!document.fullscreenElement;
+// Full screen: the browser's own when it allows it, otherwise the results block is simply laid over
+// the whole page (.fs). Either way the charts are resized to the new space.
+function onFullscreenChange() {
+  const on = !!document.fullscreenElement || $('results').classList.contains('fs');
   $('btn-fullscreen').title = on ? 'Exit full screen' : 'Full screen';
   $('btn-fullscreen').setAttribute('aria-pressed', on);
   setTimeout(() => { resizeCharts(); rangeBar.update({ redraw: true }); }, 120);
-});
+}
+function setFallbackFullscreen(on) {
+  $('results').classList.toggle('fs', on);
+  onFullscreenChange();
+}
+$('btn-fullscreen').onclick = () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else if ($('results').classList.contains('fs')) setFallbackFullscreen(false);
+  else if (document.fullscreenEnabled) $('results').requestFullscreen().catch(() => setFallbackFullscreen(true));
+  else setFallbackFullscreen(true);
+};
+document.addEventListener('fullscreenchange', onFullscreenChange);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('results').classList.contains('fs')) setFallbackFullscreen(false); });
 
 const rangeBar = createRangeBar($('rangebar'), { onChange: setZoom, onEnd: () => scheduleRelayout(0), minSpan: 3 * 3600e3 });
 let lastShadow = null;
