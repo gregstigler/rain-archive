@@ -1,13 +1,13 @@
 import {
   VARS, VAR_BY_KEY, QUICK_VARS, FAMILIES, MODELS, IFS_FROM, pre2017Source, defaultUnits, decimals, wmoLabel, compass,
-} from './vars.js?v=23';
+} from './vars.js?v=24';
 import {
   HOUR, STEP_MS, STEPS, bucketBounds, searchPlaces, resolvePoint, getElevation, fetchHourly, aggregate,
   zonedToUnix, unixToZonedInput, floorLocalHour, wallMs, tzOffset, fmtWall, fmtDuration,
   DURATION_UNITS, subtractDuration, bestDuration,
-} from './data.js?v=23';
-import { renderCharts, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=23';
-import { createRangeBar } from './rangebar.js?v=23';
+} from './data.js?v=24';
+import { renderCharts, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=24';
+import { createRangeBar } from './rangebar.js?v=24';
 
 const $ = (id) => document.getElementById(id);
 
@@ -84,8 +84,10 @@ function load() {
     }
   } catch { /* storage unavailable */ }
   state.vars = state.vars.filter((k) => VAR_BY_KEY[k]);
-  if (!STEPS.includes(state.agg)) state.agg = 'hour'; // the old "whole period" mode is now in chart titles
   if (!state.loc) state.loc = LAUSANNE;
+  // Every opening starts on the last 3 days up to now, hour by hour; place, favorites, variables,
+  // units and model are kept from last time.
+  Object.assign(state, { otherMode: 'end', endNow: true, qty: 3, qtyUnit: 'd', agg: 'hour' });
 }
 function save() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch { /* ignore */ }
