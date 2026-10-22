@@ -1,7 +1,7 @@
 // ECharts rendering: one synced chart per variable ("stacked") or a single multi-axis chart ("combined").
 // When only the data or the time range changes, existing charts are updated in place (no flicker).
-import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=29';
-import { fmtWall, STEP_MS } from './data.js?v=29';
+import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=30';
+import { fmtWall, STEP_MS } from './data.js?v=30';
 
 const PALETTE = ['#2f7fd8', '#e8743b', '#19a979', '#945ecf', '#d4526e', '#13a4b4', '#ce8f1f', '#6b7a8f'];
 const GROUP = 'rain-archive';
@@ -97,38 +97,51 @@ const MAJOR_OF = { h: [DAY, 'd', 0, 1], d: [Y / 12, 'm', 0, 1], w: [Y / 12, 'm',
 let majors = new Set();
 const bottomLabelStyled = (ms) => (majors.has(ms) ? `{major|${bottomLabel(ms)}}` : bottomLabel(ms));
 
+// Grid lines follow the smallest unit that appears in the labels: every hour when hours are
+// written, every day when days are written (even if only every other day carries a label), every
+// month, every year. If that would put lines closer than 4 px, they follow the labels instead.
+const LOWEST_OF = { h: [3600e3, 'h', 0, 1], d: [DAY, 'd', 0, 1], w: [DAY, 'd', 0, 1], m: [Y / 12, 'm', 0, 1], y: [Y, 'y', 0, 1] };
+
+// Hidden helper axis: only draws vertical grid lines at the given times.
+const gridAxis = (range, values, color) => ({
+  type: 'time', ...range, position: 'bottom',
+  axisLabel: { show: false, customValues: values },
+  axisTick: { show: false, customValues: values },
+  axisLine: { show: false, onZero: false },
+  splitLine: { show: true, lineStyle: { color, width: 1 } },
+});
+
 function xAxes(theme, gran) {
   const range = { min: chartRange.min, max: chartRange.max };
   const ticks = calendarTicks(view.s, view.e, tickUnit); // imposed, so they stay perfectly regular
   const major = MAJOR_OF[tickUnit[1]] ? calendarTicks(view.s, view.e, MAJOR_OF[tickUnit[1]]) : [];
   majors = new Set(major);
-  const weekdays = calendarTicks(view.s, view.e, [DAY, 'd', 0, 1]);
+  let minor = calendarTicks(view.s, view.e, LOWEST_OF[tickUnit[1]]);
+  if (minor.length && plotWidth / minor.length < 4) minor = ticks;
+  // Weekdays on top exactly above the bottom labels that name a day (midnight ticks), so a day
+  // hidden below for lack of room is hidden above too, and every connector has its label.
+  const weekdays = ticks.filter((t) => t % DAY === 0);
   return [
     {
-      // Minor scale: every tick labelled, light grid lines (no tick marks below the axis).
+      // Labels below the plot (no tick marks below the axis).
       type: 'time', ...range, position: 'bottom',
-      axisLabel: { color: theme.muted, fontSize: 11, hideOverlap: true, formatter: bottomLabelStyled, margin: 6, customValues: ticks,
+      axisLabel: { color: theme.muted, fontSize: 11, hideOverlap: false, formatter: bottomLabelStyled, margin: 6, customValues: ticks,
         rich: { major: { color: theme.major, fontWeight: 700, fontSize: 11 } } },
       axisTick: { show: false, customValues: ticks },
-      axisLine: { lineStyle: { color: theme.line } },
-      splitLine: { show: true, lineStyle: { color: theme.grid } },
-    },
-    {
-      // Weekdays, written diagonally above the chart, each joined to the plot by a dark tick mark.
-      type: 'time', ...range, position: 'top', show: topShown,
-      axisLabel: { color: theme.muted, fontSize: 10, rotate: 45, hideOverlap: true, formatter: topLabel, margin: 11, customValues: weekdays },
-      axisTick: { show: true, length: 10, lineStyle: { color: theme.text }, customValues: weekdays },
-      axisLine: { show: false },
+      axisLine: { onZero: false, lineStyle: { color: theme.line } }, // stays at the bottom even below 0 °C
       splitLine: { show: false },
     },
     {
-      // Major scale: no labels of its own (they are the bold ones below), only dark grid lines.
-      type: 'time', ...range, position: 'bottom',
-      axisLabel: { show: false, customValues: major },
-      axisTick: { show: false, customValues: major },
-      axisLine: { show: false },
-      splitLine: { show: true, lineStyle: { color: theme.major, width: 1 } },
+      // Weekdays, written diagonally above the chart, each joined to the top of the plot by a dark
+      // connector. onZero: false keeps the axis (and its connectors) at the top instead of at y = 0.
+      type: 'time', ...range, position: 'top', show: topShown,
+      axisLabel: { color: theme.muted, fontSize: 10, rotate: 45, hideOverlap: false, formatter: topLabel, margin: 11, customValues: weekdays },
+      axisTick: { show: true, length: 10, lineStyle: { color: theme.text }, customValues: weekdays },
+      axisLine: { show: false, onZero: false },
+      splitLine: { show: false },
     },
+    gridAxis(range, minor, theme.grid),  // light lines: smallest unit shown in the labels
+    gridAxis(range, major, theme.major), // dark lines: the larger unit (drawn last, on top)
   ];
 }
 
@@ -333,7 +346,7 @@ function baseOption(gran, theme, tooltipFmt, gridRight, gridLeft, zoom) {
     xAxis: xAxes(theme, gran),
     dataZoom: [
       // Touch screens: built-in drag/pinch off; one finger shows values, two fingers pan/zoom (attachTouch).
-      { type: 'inside', id: 'dz-in', xAxisIndex: [0, 1, 2], filterMode, disabled: IS_TOUCH, zoomOnMouseWheel: true, moveOnMouseMove: true,
+      { type: 'inside', id: 'dz-in', xAxisIndex: [0, 1, 2, 3], filterMode, disabled: IS_TOUCH, zoomOnMouseWheel: true, moveOnMouseMove: true,
         minValueSpan: 3 * 3600e3, ...win }, // the same for every aggregation level, so changing it never moves the view
     ],
   };
