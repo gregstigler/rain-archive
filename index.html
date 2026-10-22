@@ -10,10 +10,10 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="css/app.css?v=30">
+  <link rel="stylesheet" href="css/app.css?v=32">
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js" defer></script>
-  <script type="module" src="js/app.js?v=30"></script>
+  <script type="module" src="js/app.js?v=32"></script>
 </head>
 <body>
   <header class="topbar" id="topbar">
@@ -150,11 +150,11 @@
           <button type="button" class="btn small" data-view="168">1 w</button>
           <button type="button" class="btn small" data-view="720">1 m</button>
           <button type="button" class="btn small" data-view="8760">1 y</button>
-          <!-- In / out marks, as in video editors: drag one onto the chart to set where the view starts or ends -->
-          <button type="button" class="btn small icon mark" data-mark="start" title="Drag onto the chart to set the start" aria-label="Start mark: drag onto the chart">
+          <!-- In / out marks, as in video editors: drag one onto the chart to set where the period starts or ends -->
+          <button type="button" class="btn small icon mark" data-mark="start" title="Drag onto the chart to set the start of the period" aria-label="Period start: drag onto the chart">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H5v16h4"/><path d="M11 8.5 17 12l-6 3.5z" fill="currentColor"/></svg>
           </button>
-          <button type="button" class="btn small icon mark" data-mark="end" title="Drag onto the chart to set the end" aria-label="End mark: drag onto the chart">
+          <button type="button" class="btn small icon mark" data-mark="end" title="Drag onto the chart to set the end of the period" aria-label="Period end: drag onto the chart">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h4v16h-4"/><path d="M13 8.5 7 12l6 3.5z" fill="currentColor"/></svg>
           </button>
         </div>

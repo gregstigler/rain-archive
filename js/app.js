@@ -1,13 +1,13 @@
 import {
   VARS, VAR_BY_KEY, QUICK_VARS, FAMILIES, MODELS, IFS_FROM, pre2017Source, defaultUnits, decimals, wmoLabel, compass,
-} from './vars.js?v=30';
+} from './vars.js?v=32';
 import {
   HOUR, STEP_MS, STEPS, bucketBounds, searchPlaces, resolvePoint, getElevation, fetchHourly, aggregate,
   zonedToUnix, unixToZonedInput, floorLocalHour, wallMs, tzOffset, fmtWall, fmtDuration,
   DURATION_UNITS, subtractDuration, bestDuration,
-} from './data.js?v=30';
-import { renderCharts, renderEmpty, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=30';
-import { createRangeBar } from './rangebar.js?v=30';
+} from './data.js?v=32';
+import { renderCharts, renderEmpty, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=32';
+import { createRangeBar } from './rangebar.js?v=32';
 
 const $ = (id) => document.getElementById(id);
 
@@ -1004,7 +1004,7 @@ document.querySelectorAll('#view-btns button[data-view]').forEach((b) => {
 
 // ---------- In / out marks ----------
 // Drag the start mark (or the end mark) from the toolbar and drop it on a chart or on the time bar:
-// the view then starts (or ends) there. The drop point snaps to an hour, or to a bar boundary when
+// the saved period then starts (or ends) there. The drop point snaps to an hour, or to a bar boundary when
 // the data are aggregated per day, week, month or year. A dashed line shows where it will land.
 
 const WD3 = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -1052,19 +1052,28 @@ function showGuide(which, hit) {
   guide.hidden = false;
 }
 
+// A dropped mark becomes the start (or end) of the saved period: the Period panel switches to
+// "Date range" with that bound, the other bound is kept, and the data are reloaded.
 function applyMark(which, t) {
-  const { min, max, minSpan } = chartRange;
-  let s = zoomWin ? zoomWin.startMs : min, e = zoomWin ? zoomWin.endMs : max;
-  const span = e - s;
-  t = Math.min(max, Math.max(min, t));
+  const z = raw.tz;
+  const sec = unwall(t);
+  let S = rawWindow.S, E = rawWindow.E;
+  const len = E - S;
   if (which === 'start') {
-    s = t;
-    if (e - s < minSpan) e = Math.min(max, s + span); // dropped after the end: keep the length
+    S = sec;
+    if (E - S < HOUR) E = S + len; // dropped after the end: keep the length
   } else {
-    e = t;
-    if (e - s < minSpan) s = Math.max(min, e - span);
+    E = sec;
+    if (E - S < HOUR) S = E - len;
   }
-  setZoom(s, e);
+  Object.assign(state, {
+    otherMode: 'range',
+    rangeStart: unixToZonedInput(Math.max(MIN_DATE, S), z),
+    rangeEnd: unixToZonedInput(Math.min(nowHour(), E), z),
+  });
+  save();
+  syncPeriodUI();
+  scheduleFetch(0);
 }
 
 let markHintTimer;
@@ -1088,7 +1097,7 @@ document.querySelectorAll('#view-btns button[data-mark]').forEach((btn) => {
     ghost.hidden = false;
     ghost.style.left = `${e.clientX}px`;
     ghost.style.top = `${e.clientY}px`;
-    ghost.textContent = hit ? `${which === 'start' ? 'Start' : 'End'}: ${markLabel(hit.snapped)}` : `Drop on the chart to set the ${which}`;
+    ghost.textContent = hit ? `Period ${which}: ${markLabel(hit.snapped)}` : `Drop on the chart to set the period ${which}`;
     ghost.classList.toggle('off', !hit);
     showGuide(which, hit);
   });
@@ -1100,7 +1109,7 @@ document.querySelectorAll('#view-btns button[data-mark]').forEach((btn) => {
     $('mark-guide').hidden = true;
     if (moved && hit && e.type === 'pointerup') applyMark(which, hit.snapped);
     if (!moved) {
-      setStatus(`Drag this mark onto the chart to set the ${which} of the view.`);
+      setStatus(`Drag this mark onto the chart to set the ${which} of the period.`);
       clearTimeout(markHintTimer);
       markHintTimer = setTimeout(() => setStatus(''), 3000);
     }

@@ -1,7 +1,7 @@
 // ECharts rendering: one synced chart per variable ("stacked") or a single multi-axis chart ("combined").
 // When only the data or the time range changes, existing charts are updated in place (no flicker).
-import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=30';
-import { fmtWall, STEP_MS } from './data.js?v=30';
+import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=32';
+import { fmtWall, STEP_MS } from './data.js?v=32';
 
 const PALETTE = ['#2f7fd8', '#e8743b', '#19a979', '#945ecf', '#d4526e', '#13a4b4', '#ce8f1f', '#6b7a8f'];
 const GROUP = 'rain-archive';
@@ -135,7 +135,8 @@ function xAxes(theme, gran) {
       // Weekdays, written diagonally above the chart, each joined to the top of the plot by a dark
       // connector. onZero: false keeps the axis (and its connectors) at the top instead of at y = 0.
       type: 'time', ...range, position: 'top', show: topShown,
-      axisLabel: { color: theme.muted, fontSize: 10, rotate: 45, hideOverlap: false, formatter: topLabel, margin: 11, customValues: weekdays },
+      // rotate −45: text rising from bottom left to top right, starting at its connector.
+      axisLabel: { color: theme.muted, fontSize: 10, rotate: -45, hideOverlap: false, formatter: topLabel, margin: 11, customValues: weekdays },
       axisTick: { show: true, length: 10, lineStyle: { color: theme.text }, customValues: weekdays },
       axisLine: { show: false, onZero: false },
       splitLine: { show: false },
