@@ -1,12 +1,13 @@
 import {
   VARS, VAR_BY_KEY, QUICK_VARS, FAMILIES, MODELS, IFS_FROM, pre2017Source, defaultUnits, decimals, wmoLabel, compass,
-} from './vars.js?v=7';
+} from './vars.js?v=10';
 import {
   HOUR, searchPlaces, resolvePoint, getElevation, fetchHourly, aggregate,
   zonedToUnix, unixToZonedInput, floorLocalHour, wallMs, fmtWall, fmtDuration,
   DURATION_UNITS, subtractDuration, bestDuration,
-} from './data.js?v=7';
-import { renderCharts, disposeCharts, resizeCharts } from './charts.js?v=7';
+} from './data.js?v=10';
+import { renderCharts, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=10';
+import { createRangeBar } from './rangebar.js?v=10';
 
 const $ = (id) => document.getElementById(id);
 const STORE_KEY = 'rain-archive-state';
@@ -491,8 +492,11 @@ async function doFetch() {
   fetchAbort?.abort();
   fetchAbort = new AbortController();
   setStatus('Loading data…', 'loading');
+  const ctrl = fetchAbort;
+  const done = watchSlow('Loading the data', () => ctrl.abort());
   try {
     raw = await fetchHourly({ loc: state.loc, keys: [...state.vars], startSec: w.S, endSec: w.E, model: state.model, signal: fetchAbort.signal });
+    done();
     raw.loadedS = w.S;
     raw.loadedE = w.E;
     rawWindow = w;
@@ -501,22 +505,69 @@ async function doFetch() {
     setStatus('');
     renderResults();
   } catch (e) {
+    done();
     if (e.name === 'AbortError') return;
     setStatus(`Could not load data: ${e.message}`, 'error');
     clearResults();
   }
 }
 
-// Earlier data, fetched when the chart is panned to its left end: 3× the visible span.
+// Reaching either end of the chart loads 3× the visible span beyond it (never past the current hour).
 let loadingEarlier = false, edgeTimer;
 function onChartZoom(z) {
   zoomWin = { startMs: z.startMs, endMs: z.endMs };
   setActiveView(null);
   renderVisibleRange();
+  rangeBar.update({ start: z.startMs, end: z.endMs });
   clearTimeout(edgeTimer);
-  if (z.atLeftEdge && raw) {
-    edgeTimer = setTimeout(() => loadEarlierTo(raw.loadedS - 3 * (z.endMs - z.startMs) / 1000), 350);
+  if (!raw || !(z.atLeftEdge || z.atRightEdge)) return;
+  edgeTimer = setTimeout(async () => {
+    const span = (z.endMs - z.startMs) / 1000;
+    if (z.atLeftEdge) loadEarlierTo(raw.loadedS - 3 * span);
+    if (z.atRightEdge) {
+      const E1 = Math.min(floorLocalHour(Date.now() / 1000, raw.tz), raw.loadedE + 3 * span);
+      if (await loadLaterTo(E1, raw.loadedE)) renderResults();
+    }
+  }, 350);
+}
+
+// ---------- "This may be slow" dialog ----------
+// Used before a display predicted to be slow, and when a download is still running after 5 s.
+
+let choiceToken = 0;
+function showChoice({ title, text, buttons }) {
+  const token = ++choiceToken;
+  $('slow-title').textContent = title;
+  $('slow-text').textContent = text;
+  const box = $('slow-btns');
+  box.innerHTML = '';
+  for (const b of buttons) {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = `btn${b.primary ? ' primary' : ''}`;
+    el.textContent = b.label;
+    el.onclick = () => { $('slow-dialog').close(); b.run?.(); };
+    box.append(el);
   }
+  if (!$('slow-dialog').open) $('slow-dialog').showModal();
+  return token;
+}
+function closeChoice(token) { if (token === choiceToken && $('slow-dialog').open) $('slow-dialog').close(); }
+
+// Start a 5 s watchdog for a download; returns the function to call when it is over.
+function watchSlow(what, cancel) {
+  let token = 0;
+  const t = setTimeout(() => {
+    token = showChoice({
+      title: 'This is taking long',
+      text: `${what} is still running after 5 seconds. Long periods with several variables take longer to download.`,
+      buttons: [
+        { label: 'Keep waiting', primary: true },
+        { label: 'Cancel', run: () => { cancel(); setStatus('Cancelled.'); } },
+      ],
+    });
+  }, 5000);
+  return () => { clearTimeout(t); if (token) closeChoice(token); };
 }
 
 // Extend loaded data back to S1 (unix seconds). Returns true when new data was added.
@@ -528,8 +579,11 @@ async function loadEarlierTo(S1) {
   if (S0 - S1 < HOUR) return false;
   loadingEarlier = true;
   setStatus('Loading earlier data…', 'loading');
+  const ctrl = new AbortController();
+  fetchAbort?.signal.addEventListener('abort', () => ctrl.abort());
+  const done = watchSlow('Loading earlier data', () => ctrl.abort());
   try {
-    const prev = await fetchHourly({ loc: state.loc, keys: Object.keys(target.values), startSec: S1, endSec: S0, model: target.model, signal: fetchAbort?.signal });
+    const prev = await fetchHourly({ loc: state.loc, keys: Object.keys(target.values), startSec: S1, endSec: S0, model: target.model, signal: ctrl.signal }).finally(done);
     if (raw !== target) return false; // a new search replaced the data meanwhile
     target.times = prev.times.concat(target.times);
     for (const k of Object.keys(target.values)) target.values[k] = prev.values[k].concat(target.values[k]);
@@ -554,9 +608,12 @@ async function loadLaterTo(E1, from) {
   if (E1 - E0 < HOUR) return false;
   const start = Math.max(E0, floorLocalHour(from, target.tz));
   loadingLater = true;
-  setStatus('Loading recent data…', 'loading');
+  setStatus('Loading later data…', 'loading');
+  const ctrl = new AbortController();
+  fetchAbort?.signal.addEventListener('abort', () => ctrl.abort());
+  const done = watchSlow('Loading later data', () => ctrl.abort());
   try {
-    const next = await fetchHourly({ loc: state.loc, keys: Object.keys(target.values), startSec: start, endSec: E1, model: target.model, signal: fetchAbort?.signal });
+    const next = await fetchHourly({ loc: state.loc, keys: Object.keys(target.values), startSec: start, endSec: E1, model: target.model, signal: ctrl.signal }).finally(done);
     if (raw !== target) return false;
     if (start - E0 > HOUR && next.times.length) {
       target.times.push(E0 + HOUR);
@@ -575,7 +632,7 @@ async function loadLaterTo(E1, from) {
 }
 
 // View buttons: the whole period; "now": the current visible length ending now (the saved period is
-// not changed); 1 d…1 m: the last N hours/days of the loaded data.
+// not changed); 1 d…1 m: N hours/days ending where the chart currently ends.
 let activeView = null;
 let lastX = [];
 function setActiveView(v) {
@@ -586,10 +643,16 @@ function setActiveView(v) {
 // Number of buckets a view shows: N hours = N hourly bars, or N/24 daily bars (the last day may be partial).
 const viewBuckets = (view) => (state.agg === 'day' ? Math.max(1, Math.round(Number(view) / 24)) : Number(view));
 
-function viewWindow(view, spanMs) {
+// Index of the last bucket whose centre is at or before ms (wall ms).
+function lastIndexAtOrBefore(ms) {
+  for (let i = lastX.length - 1; i >= 0; i--) if (lastX[i] <= ms) return i;
+  return 0;
+}
+
+function viewWindow(view, spanMs, anchorMs) {
   const step = state.agg === 'day' ? 86400e3 : 3600e3;
-  const endMs = lastX[lastX.length - 1] + step / 2;
-  if (view === 'now') return { startMs: endMs - spanMs, endMs };
+  const dataEnd = lastX[lastX.length - 1] + step / 2;
+  if (view === 'now') return { startMs: dataEnd - spanMs, endMs: dataEnd };
   if (view === 'period') {
     // Buckets of the period: hourly stamps in (S, E], or the days containing them.
     const dayShift = state.agg === 'day' ? 86400e3 - 3600e3 : 0;
@@ -599,26 +662,32 @@ function viewWindow(view, spanMs) {
     const last = [...lastX].reverse().find((x) => x <= to) ?? lastX[lastX.length - 1];
     return { startMs: first - step / 2, endMs: last + step / 2 };
   }
-  const first = lastX[Math.max(0, lastX.length - viewBuckets(view))];
-  return { startMs: first - step / 2, endMs };
+  const iEnd = lastIndexAtOrBefore(anchorMs);
+  const first = lastX[Math.max(0, iEnd - viewBuckets(view) + 1)];
+  return { startMs: first - step / 2, endMs: lastX[iEnd] + step / 2 };
 }
 
 async function applyView(view) {
   setActiveView(view);
   const stepSec = state.agg === 'day' ? 86400 : HOUR;
+  const stepMs = stepSec * 1000;
   let spanMs = 0;
+  // 1 d…1 m keep the end of what the chart shows now; only Period and Up to now move it.
+  const anchorMs = zoomWin ? zoomWin.endMs : (lastX.length ? lastX[lastX.length - 1] + stepMs / 2 : 0);
   if (view === 'now') {
-    spanMs = zoomWin ? zoomWin.endMs - zoomWin.startMs : (rawWindow.E - rawWindow.S) * 1000 + stepSec * 1000;
+    spanMs = zoomWin ? zoomWin.endMs - zoomWin.startMs : (rawWindow.E - rawWindow.S) * 1000 + stepMs;
     const now = floorLocalHour(Date.now() / 1000, raw.tz);
     await loadLaterTo(now, now - spanMs / 1000);
+    if (raw.loadedE - spanMs / 1000 < raw.loadedS) await loadEarlierTo(raw.loadedE - spanMs / 1000);
+  } else if (view === 'period') {
+    if (rawWindow.S < raw.loadedS) await loadEarlierTo(rawWindow.S);
+  } else {
+    const missing = viewBuckets(view) - (lastIndexAtOrBefore(anchorMs) + 1);
+    if (missing > 0) await loadEarlierTo(raw.loadedS - (missing + 1) * stepSec);
   }
-  const S = view === 'period' ? rawWindow.S
-    : view === 'now' ? raw.loadedE - spanMs / 1000
-    : raw.loadedE - viewBuckets(view) * stepSec;
-  if (S < raw.loadedS) await loadEarlierTo(S);
   if (activeView !== view) return; // user moved on meanwhile
-  renderResults(); // refreshes lastX for the current time step
-  zoomWin = viewWindow(view, spanMs);
+  if (!renderResults()) return; // refreshes lastX for the current time step (false: waiting for the user)
+  zoomWin = viewWindow(view, spanMs, anchorMs);
   renderResults();
   setActiveView(view);
 }
@@ -656,6 +725,7 @@ function clearResults() {
   raw = null;
   disposeCharts();
   $('charts').innerHTML = '';
+  $('rangebar').hidden = true;
   $('model-used').textContent = '';
   $('source-note').textContent = '';
   $('btn-chart-mode').hidden = true;
@@ -681,9 +751,13 @@ function buildTitles(keys) {
     else { t.agg = v.kind === 'sum' ? 'total' : 'mean'; t.value = `${fmt(s.val[0], s.unit)} ${s.unit}`; }
     const extra = [];
     if (v.kind === 'sum') {
-      const h = hrs.series[k].val.filter((x) => x != null);
-      const wet = h.filter((x) => x > 0).length;
-      extra.push(`max ${fmt(h.length ? Math.max(...h) : null, s.unit)} ${s.unit}/h`);
+      let wet = 0, top = null; // a loop, not Math.max(...h): years of hours overflow the argument list
+      for (const x of hrs.series[k].val) {
+        if (x == null) continue;
+        if (x > 0) wet++;
+        if (top == null || x > top) top = x;
+      }
+      extra.push(`max ${fmt(top, s.unit)} ${s.unit}/h`);
       if (v.key === 'sunshine_duration') extra.push(`${wet} h with sun`);
       else if (v.family === 'precip' && v.key !== 'et0_fao_evapotranspiration' || v.family === 'snow') extra.push(`${wet} wet h`);
     } else if (v.kind === 'mean') {
@@ -697,11 +771,51 @@ function buildTitles(keys) {
   return titles;
 }
 
+// Ask before a display that is likely to be slow: more than SLOW_POINTS hourly points, or a
+// predicted drawing time over 5 s. The prediction uses the speed measured on this device
+// (milliseconds per point of previous displays), so a slower phone gets asked sooner.
+const SLOW_POINTS = 8000;
+const SLOW_MS = 5000;
+const SPEED_KEY = 'rain-archive-ms-per-point';
+let msPerPoint = 0.03;
+try { msPerPoint = Number(localStorage.getItem(SPEED_KEY)) || msPerPoint; } catch { /* ignore */ }
+
+function learnSpeed(points, ms) {
+  if (points < 500) return; // too small to measure
+  msPerPoint = 0.6 * msPerPoint + 0.4 * (ms / points);
+  try { localStorage.setItem(SPEED_KEY, String(msPerPoint)); } catch { /* ignore */ }
+}
+
+function confirmSlow(keys, points, predictedMs) {
+  const hourly = state.agg === 'hour';
+  const secs = Math.max(1, Math.round(predictedMs / 1000));
+  const resume = () => { setStatus(''); raw.slowOk = true; if (activeView) applyView(activeView); else renderResults(); };
+  setStatus('Waiting for your choice…');
+  showChoice({
+    title: 'This display may be slow',
+    text: `${hourly ? 'Hourly' : 'Daily'} display of ${fmtDuration(raw.times.length)} for ${keys.length} variable${keys.length > 1 ? 's' : ''}: `
+      + `about ${points.toLocaleString('en')} points, ${secs > 2 ? `roughly ${secs} s to draw on this device` : 'slow to draw and to react'}.`
+      + (hourly ? ' Per day shows the same period with 24× fewer points.' : ' A shorter period or fewer variables would be faster.'),
+    buttons: hourly
+      ? [{ label: 'Show per day', primary: true, run: () => { setStatus(''); setAgg('day'); } },
+        { label: 'Show per hour anyway', run: resume }]
+      : [{ label: 'Show anyway', primary: true, run: resume },
+        { label: 'Cancel', run: () => setStatus('Display cancelled: choose a shorter period or fewer variables.') }],
+  });
+}
+
 function renderResults() {
-  if (!raw) return;
+  if (!raw) return false;
   const keys = state.vars.filter((k) => k in raw.values);
-  if (!keys.length) { clearResults(); return; }
-  if (!raw.times.length) { setStatus('No data returned for this period.', 'error'); return; }
+  if (!keys.length) { clearResults(); return false; }
+  if (!raw.times.length) { setStatus('No data returned for this period.', 'error'); return false; }
+  const points = Math.ceil(raw.times.length / (state.agg === 'day' ? 24 : 1)) * keys.length;
+  const predictedMs = points * msPerPoint;
+  if (!raw.slowOk && ((state.agg === 'hour' && points > SLOW_POINTS) || predictedMs > SLOW_MS)) {
+    confirmSlow(keys, points, predictedMs);
+    return false;
+  }
+  const t0 = performance.now();
   const titles = buildTitles(keys);
 
   $('view-btns').hidden = false;
@@ -718,10 +832,16 @@ function renderResults() {
     lastX = agg.x;
     renderCharts($('charts'), agg, keys, state.agg, keys.length < 2 ? 'stacked' : state.chartMode,
       { zoom: zoomWin, onZoom: onChartZoom, titles });
+    learnSpeed(agg.x.length * keys.length, performance.now() - t0);
+    // Time bar: whole loaded range, visible window, and the first variable's profile.
+    $('rangebar').hidden = false;
+    lastShadow = agg.x.map((x, i) => [x, agg.series[keys[0]].val[i]]);
+    rangeBar.update({ ...chartRange, start: zoomWin ? zoomWin.startMs : chartRange.min, end: zoomWin ? zoomWin.endMs : chartRange.max, shadow: lastShadow });
   }
 
   $('model-used').textContent = modelUsedText(keys, raw.loadedS, rawWindow.E);
   renderVisibleRange();
+  return true;
 }
 
 // "From … to …" of what the chart currently shows (follows zoom and pan).
@@ -755,8 +875,14 @@ document.addEventListener('fullscreenchange', () => {
   setTimeout(resizeCharts, 120);
 });
 
+const rangeBar = createRangeBar($('rangebar'), { onChange: setZoom, minSpan: 3 * 3600e3 });
+let lastShadow = null;
+
 let resizeTimer;
-window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(resizeCharts, 150); });
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { resizeCharts(); if (lastShadow) rangeBar.update({ shadow: lastShadow }); }, 150);
+});
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => renderResults());
 
 // ---------- Boot ----------

@@ -1,6 +1,6 @@
 // ECharts rendering: one synced chart per variable ("stacked") or a single multi-axis chart ("combined").
-import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=7';
-import { fmtWall } from './data.js?v=7';
+import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=10';
+import { fmtWall } from './data.js?v=10';
 
 const PALETTE = ['#2f7fd8', '#e8743b', '#19a979', '#945ecf', '#d4526e', '#13a4b4', '#ce8f1f', '#6b7a8f'];
 const GROUP = 'rain-archive';
@@ -84,6 +84,12 @@ export function disposeCharts() {
 
 export function resizeCharts() { instances.forEach((c) => c.resize()); }
 
+// Full x range of the last render (wall ms) and a way to set the visible window from outside.
+export let chartRange = null;
+export function setZoom(startMs, endMs) {
+  instances[0]?.dispatchAction({ type: 'dataZoom', startValue: startMs, endValue: endMs }); // connected charts follow
+}
+
 function fmtVal(v, unit) {
   if (v == null || Number.isNaN(v)) return '–';
   return `${v.toFixed(decimals(unit))} ${unit}`;
@@ -114,20 +120,25 @@ function seriesFor(key, s, x, gran, color, axes, theme) {
   const v = VAR_BY_KEY[key];
   const pts = (arr) => x.map((t, i) => [t, arr[i]]);
   const out = [];
+  // Long series: bars drawn in "large" batch mode, lines thinned to their visible shape (LTTB).
+  const many = x.length > 2000;
+  const fast = { sampling: 'lttb', progressive: 4000 };
   if (v.kind === 'sum') {
-    out.push({ name: v.label, type: 'bar', yAxisIndex: axes.main, data: pts(s.val), itemStyle: { color }, barMaxWidth: 26, barCategoryGap: '15%' });
-    out.push({ name: `${v.label} – running total`, type: 'line', yAxisIndex: axes.cum, data: pts(s.cum), showSymbol: false,
+    out.push({ name: v.label, type: 'bar', yAxisIndex: axes.main, data: pts(s.val), itemStyle: { color }, barMaxWidth: 26, barCategoryGap: '15%',
+      large: many, largeThreshold: 2000 });
+    out.push({ name: `${v.label} – running total`, type: 'line', yAxisIndex: axes.cum, data: pts(s.cum), showSymbol: false, ...fast,
       lineStyle: { color: theme.text, width: 1.5, type: 'dashed', opacity: 0.8 }, itemStyle: { color: theme.text }, step: false, z: 3 });
   } else if (v.kind === 'dir' || v.kind === 'code') {
-    out.push({ name: v.label, type: 'scatter', yAxisIndex: axes.main, data: pts(s.val), symbolSize: 6, itemStyle: { color } });
+    out.push({ name: v.label, type: 'scatter', yAxisIndex: axes.main, data: pts(s.val), symbolSize: many ? 3 : 6, itemStyle: { color },
+      large: many, largeThreshold: 2000 });
   } else {
     if (gran === 'day') {
       const stack = `band-${key}`;
-      out.push({ name: `${v.label} min`, type: 'line', yAxisIndex: axes.main, data: pts(s.min), stack, showSymbol: false, lineStyle: { opacity: 0 }, silent: true });
+      out.push({ name: `${v.label} min`, type: 'line', yAxisIndex: axes.main, data: pts(s.min), stack, showSymbol: false, lineStyle: { opacity: 0 }, silent: true, ...fast });
       out.push({ name: `${v.label} range`, type: 'line', yAxisIndex: axes.main, data: x.map((t, i) => [t, s.max[i] == null ? null : s.max[i] - s.min[i]]),
-        stack, showSymbol: false, lineStyle: { opacity: 0 }, areaStyle: { color, opacity: 0.18 }, silent: true });
+        stack, showSymbol: false, lineStyle: { opacity: 0 }, areaStyle: { color, opacity: 0.18 }, silent: true, ...fast });
     }
-    out.push({ name: v.label, type: 'line', yAxisIndex: axes.main, data: pts(s.val), showSymbol: x.length < 60, symbolSize: 4,
+    out.push({ name: v.label, type: 'line', yAxisIndex: axes.main, data: pts(s.val), showSymbol: x.length < 60, symbolSize: 4, ...fast,
       connectNulls: false, lineStyle: { color, width: 2 }, itemStyle: { color } });
   }
   return out;
@@ -158,7 +169,7 @@ function baseOption(x, gran, theme, tooltipFmt, showSlider, gridRight, gridLeft,
     useUTC: true, // x values are wall-clock times of the location, encoded as UTC
     animation: false,
     textStyle: { color: theme.text },
-    grid: { left: gridLeft, right: gridRight, top: 30, bottom: showSlider ? 66 : 24 },
+    grid: { left: gridLeft, right: gridRight, top: 30, bottom: 24 }, // the time bar lives outside (rangebar.js)
     tooltip: {
       trigger: 'axis', confine: true, triggerOn: 'mousemove|click',
       backgroundColor: theme.card, borderColor: theme.line, textStyle: { color: theme.text, fontSize: 12 },
@@ -175,8 +186,6 @@ function baseOption(x, gran, theme, tooltipFmt, showSlider, gridRight, gridLeft,
     dataZoom: [
       // Touch screens: built-in drag/pinch off; one finger shows values, two fingers pan/zoom (attachTouch).
       { type: 'inside', id: 'dz-in', xAxisIndex: 0, filterMode, disabled: IS_TOUCH, zoomOnMouseWheel: true, moveOnMouseMove: true, minValueSpan: gran === 'day' ? step : step * 3, ...win },
-      { type: 'slider', id: 'dz-sl', xAxisIndex: 0, filterMode, show: showSlider, height: 22, bottom: 10, ...win,
-        borderColor: theme.line, textStyle: { color: theme.muted, fontSize: 10 }, labelFormatter: (ms) => fmtWall(ms, gran === 'hour', false) },
     ],
   };
 }
@@ -188,7 +197,7 @@ function themeColors() {
 /**
  * agg: result of aggregate(); keys: variables; gran: 'hour'|'day'; mode: 'stacked'|'combined'.
  * opts.zoom: {startMs, endMs} visible window to restore (wall ms);
- * opts.onZoom({startMs, endMs, atLeftEdge}) is called after the user zooms or pans.
+ * opts.onZoom({startMs, endMs, atLeftEdge, atRightEdge}) is called after the user zooms or pans.
  */
 export function renderCharts(container, agg, keys, gran, mode, opts = {}) {
   disposeCharts();
@@ -201,6 +210,7 @@ export function renderCharts(container, agg, keys, gran, mode, opts = {}) {
   const titles = opts.titles || {};
   const { min, max } = axisRange(x, gran);
   const minSpan = gran === 'day' ? 86400e3 : 3 * 3600e3;
+  chartRange = { min, max, minSpan };
   const zoom = opts.zoom;
   const listen = (chart) => {
     if (!opts.onZoom) return;
@@ -208,7 +218,7 @@ export function renderCharts(container, agg, keys, gran, mode, opts = {}) {
       const dz = chart.getOption().dataZoom[0];
       const startMs = min + (dz.start / 100) * (max - min);
       const endMs = min + (dz.end / 100) * (max - min);
-      opts.onZoom({ startMs, endMs, atLeftEdge: dz.start <= 0.2 });
+      opts.onZoom({ startMs, endMs, atLeftEdge: dz.start <= 0.2, atRightEdge: dz.end >= 99.8 });
     });
   };
 

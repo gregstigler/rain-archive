@@ -190,7 +190,23 @@ details.sub > summary { font-weight: 400; }
 
 /* Vertical one-finger swipes still scroll the page; two-finger gestures are handled by the app. */
 .chart { width: 100%; height: 230px; touch-action: pan-y; }
-.chart.last { height: 280px; }
+.chart.last { height: 230px; }
+
+/* Time bar: the window can be dragged; a long press on an edge unlocks resizing that edge. */
+.rangebar {
+  position: relative; height: 30px; margin: 4px 0 2px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--card); touch-action: none; user-select: none; cursor: pointer; overflow: hidden;
+}
+.rb-shadow { position: absolute; inset: 0; width: 100%; height: 100%; }
+.rb-shadow path { fill: var(--accent); opacity: .22; }
+.rb-thumb {
+  position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border: 1.5px solid var(--accent); border-radius: 5px; cursor: grab;
+}
+.rb-h { position: absolute; top: 6px; bottom: 6px; width: 4px; border-radius: 2px; background: var(--accent); opacity: .55; }
+.rb-l { left: 2px; }
+.rb-r { right: 2px; }
+.resizing-l .rb-l, .resizing-r .rb-r { opacity: 1; width: 6px; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
 .chart.combined { height: 400px; }
 .chart-title { margin: 12px 0 0; font-size: 14px; line-height: 1.35; font-variant-numeric: tabular-nums; }
 .chart-title .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
@@ -207,6 +223,9 @@ dialog {
   background: var(--card); color: var(--text);
 }
 dialog[open] { display: flex; flex-direction: column; }
+dialog.confirm { height: auto; width: min(380px, calc(100vw - 32px)); padding: 16px; }
+dialog.confirm p { margin: 0 0 8px; }
+.confirm-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 dialog::backdrop { background: rgba(0,0,0,.45); }
 .dialog-head, .dialog-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; }
 #map { flex: 1; min-height: 200px; }

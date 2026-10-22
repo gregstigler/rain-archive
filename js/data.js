@@ -1,5 +1,5 @@
 // Time-zone helpers, Open-Meteo requests and aggregation.
-import { VAR_BY_KEY, baseUnit, displayUnit, convert } from './vars.js?v=7';
+import { VAR_BY_KEY, baseUnit, displayUnit, convert } from './vars.js?v=10';
 
 const ARCHIVE = 'https://archive-api.open-meteo.com/v1/archive';
 const FORECAST = 'https://api.open-meteo.com/v1/forecast';
@@ -30,10 +30,20 @@ export function localParts(sec, tz) {
   return p; // {year, month, day, hour, minute, second}
 }
 
-// Offset of tz from UTC at instant sec, in seconds.
+// Offset of tz from UTC at instant sec, in seconds. Memoised per hour: Intl formatting is slow and
+// long hourly series ask for the same offsets on every render.
+const offsetCache = new Map();
 export function tzOffset(sec, tz) {
-  const p = localParts(sec, tz);
-  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) / 1000 - Math.floor(sec);
+  const key = `${tz}|${Math.floor(sec / 3600)}`;
+  let off = offsetCache.get(key);
+  if (off === undefined) {
+    const h = Math.floor(sec / 3600) * 3600;
+    const p = localParts(h, tz);
+    off = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) / 1000 - h;
+    if (offsetCache.size > 500000) offsetCache.clear();
+    offsetCache.set(key, off);
+  }
+  return off;
 }
 
 // "YYYY-MM-DDTHH:mm" in tz -> unix seconds.
@@ -245,8 +255,7 @@ export function aggregate(raw, keys, mode, units) {
     const byDay = new Map();
     times.forEach((t, i) => {
       // An hourly stamp at 00:00 covers 23:00–24:00 of the previous day.
-      const p = localParts(t - 1, tz);
-      const key = Date.UTC(p.year, p.month - 1, p.day);
+      const key = Math.floor(wallMs(t - 1, tz) / 86400e3) * 86400e3; // local midnight, as wall ms
       if (!byDay.has(key)) { byDay.set(key, { x: key, idx: [] }); buckets.push(byDay.get(key)); }
       byDay.get(key).idx.push(i);
     });
