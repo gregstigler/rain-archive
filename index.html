@@ -10,10 +10,10 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="css/app.css?v=24">
+  <link rel="stylesheet" href="css/app.css?v=29">
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js" defer></script>
-  <script type="module" src="js/app.js?v=24"></script>
+  <script type="module" src="js/app.js?v=29"></script>
 </head>
 <body>
   <header class="topbar" id="topbar">
@@ -150,6 +150,13 @@
           <button type="button" class="btn small" data-view="168">1 w</button>
           <button type="button" class="btn small" data-view="720">1 m</button>
           <button type="button" class="btn small" data-view="8760">1 y</button>
+          <!-- In / out marks, as in video editors: drag one onto the chart to set where the view starts or ends -->
+          <button type="button" class="btn small icon mark" data-mark="start" title="Drag onto the chart to set the start" aria-label="Start mark: drag onto the chart">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H5v16h4"/><path d="M11 8.5 17 12l-6 3.5z" fill="currentColor"/></svg>
+          </button>
+          <button type="button" class="btn small icon mark" data-mark="end" title="Drag onto the chart to set the end" aria-label="End mark: drag onto the chart">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h4v16h-4"/><path d="M13 8.5 7 12l6 3.5z" fill="currentColor"/></svg>
+          </button>
         </div>
         <div class="tool-icons">
           <!-- Time step: finer ‹ current › coarser (hour → day → month → year) -->
@@ -162,9 +169,6 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
             </button>
           </div>
-          <button type="button" id="btn-refresh" class="btn icon primary" title="Refresh" aria-label="Refresh">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
-          </button>
         </div>
       </div>
       <div id="status" class="status" role="status"></div>
@@ -176,7 +180,11 @@
           <button type="button" id="btn-fullscreen" class="btn icon" title="Full screen" aria-label="Full screen" hidden>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
           </button>
+          <button type="button" id="btn-refresh" class="btn icon" title="Refresh" aria-label="Refresh">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
+          </button>
         </div>
+        <div id="mark-guide" class="mark-guide" hidden><span></span></div>
         <div id="charts"></div>
       </div>
       <div id="rangebar" class="rangebar" hidden aria-label="Visible time window: drag to move, long-press an edge or use two fingers to resize"></div>
@@ -188,6 +196,8 @@
     Place names © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors ·
     Map © <a href="https://opentopomap.org/" target="_blank" rel="noopener">OpenTopoMap</a> (CC BY-SA)
   </footer>
+
+  <div id="mark-ghost" class="mark-ghost" hidden></div>
 
   <dialog id="slow-dialog" class="confirm">
     <p><strong id="slow-title"></strong></p>

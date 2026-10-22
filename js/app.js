@@ -1,13 +1,13 @@
 import {
   VARS, VAR_BY_KEY, QUICK_VARS, FAMILIES, MODELS, IFS_FROM, pre2017Source, defaultUnits, decimals, wmoLabel, compass,
-} from './vars.js?v=24';
+} from './vars.js?v=29';
 import {
   HOUR, STEP_MS, STEPS, bucketBounds, searchPlaces, resolvePoint, getElevation, fetchHourly, aggregate,
   zonedToUnix, unixToZonedInput, floorLocalHour, wallMs, tzOffset, fmtWall, fmtDuration,
   DURATION_UNITS, subtractDuration, bestDuration,
-} from './data.js?v=24';
-import { renderCharts, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=24';
-import { createRangeBar } from './rangebar.js?v=24';
+} from './data.js?v=29';
+import { renderCharts, renderEmpty, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=29';
+import { createRangeBar } from './rangebar.js?v=29';
 
 const $ = (id) => document.getElementById(id);
 
@@ -755,9 +755,22 @@ function wholeBars({ S, E }) {
 
 async function doFetch() {
   if (!state.loc) { setStatus('Search a place, use your position or pick one on the map to start.'); return; }
-  if (!state.vars.length) { setStatus('Select at least one variable.'); clearResults(); return; }
   const w = computeWindow();
   if (w.error) { setStatus(w.error, 'error'); clearResults(); return; }
+  if (!state.vars.length) {
+    // Nothing to download: keep an empty chart over the period, with a message.
+    fetchAbort?.abort();
+    const empty = { times: [], values: {}, tz: tz(), model: state.model, filledHours: 0 };
+    period = empty;
+    raw = { ...empty, loadedS: w.S, loadedE: w.E };
+    rawWindow = w;
+    axis = axisAround(w.S, w.E);
+    zoomWin = { startMs: wallMs(w.S, raw.tz), endMs: wallMs(w.E, raw.tz) };
+    setActiveView('period');
+    setStatus('');
+    renderResults();
+    return;
+  }
   fetchAbort?.abort();
   fetchAbort = new AbortController();
   const ctrl = fetchAbort;
@@ -796,6 +809,7 @@ async function ensureData({ S, E }) {
   const target = raw;
   S = Math.max(MIN_DATE, floorLocalHour(S, target.tz));
   E = Math.min(nowHour(), E);
+  if (!Object.keys(target.values).length) return false; // no variable: nothing to load
   if (S >= target.loadedS && E <= target.loadedE) return false;
   const ctrl = new AbortController();
   fetchAbort?.signal.addEventListener('abort', () => ctrl.abort());
@@ -984,8 +998,115 @@ async function applyView(view) {
   setActiveView(view);
 }
 
-document.querySelectorAll('#view-btns button').forEach((b) => {
+document.querySelectorAll('#view-btns button[data-view]').forEach((b) => {
   b.onclick = () => { if (raw) applyView(b.dataset.view); };
+});
+
+// ---------- In / out marks ----------
+// Drag the start mark (or the end mark) from the toolbar and drop it on a chart or on the time bar:
+// the view then starts (or ends) there. The drop point snaps to an hour, or to a bar boundary when
+// the data are aggregated per day, week, month or year. A dashed line shows where it will land.
+
+const WD3 = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MO3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function markLabel(ms) {
+  const d = new Date(ms);
+  const date = `${WD3[d.getUTCDay()]} ${d.getUTCDate()} ${MO3[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+  return state.agg === 'hour' ? `${date} ${String(d.getUTCHours()).padStart(2, '0')}:00` : date;
+}
+
+function snapMark(ms) {
+  if (state.agg === 'hour') return Math.round(ms / 3600e3) * 3600e3;
+  const [a, b] = bucketBounds(ms, state.agg);
+  return ms - a < b - ms ? a : b;
+}
+
+// Time (wall ms) under a screen point, or null when the point is neither on a plot nor on the time bar.
+function timeAtPoint(x, y) {
+  const el = document.elementFromPoint(x, y);
+  const chartEl = el?.closest('.chart');
+  if (chartEl) {
+    const chart = echarts.getInstanceByDom(chartEl);
+    const r = chartEl.getBoundingClientRect();
+    const grid = chart?.getModel().getComponent('grid')?.coordinateSystem?.getRect();
+    if (!grid || x - r.left < grid.x - 2 || x - r.left > grid.x + grid.width + 2) return null;
+    return { t: chart.convertFromPixel({ xAxisIndex: 0 }, x - r.left), chart, chartEl };
+  }
+  const track = el?.closest('.rb-track');
+  if (track) {
+    const r = track.getBoundingClientRect();
+    return { t: chartRange.min + ((x - r.left) / r.width) * (chartRange.max - chartRange.min) };
+  }
+  return null;
+}
+
+function showGuide(which, hit) {
+  const guide = $('mark-guide');
+  if (!hit?.chart) { guide.hidden = true; return; }
+  const wrap = guide.parentElement.getBoundingClientRect();
+  const r = hit.chartEl.getBoundingClientRect();
+  const px = hit.chart.convertToPixel({ xAxisIndex: 0 }, hit.snapped);
+  guide.style.left = `${r.left - wrap.left + px}px`;
+  guide.classList.toggle('end', which === 'end');
+  guide.firstChild.textContent = markLabel(hit.snapped);
+  guide.hidden = false;
+}
+
+function applyMark(which, t) {
+  const { min, max, minSpan } = chartRange;
+  let s = zoomWin ? zoomWin.startMs : min, e = zoomWin ? zoomWin.endMs : max;
+  const span = e - s;
+  t = Math.min(max, Math.max(min, t));
+  if (which === 'start') {
+    s = t;
+    if (e - s < minSpan) e = Math.min(max, s + span); // dropped after the end: keep the length
+  } else {
+    e = t;
+    if (e - s < minSpan) s = Math.max(min, e - span);
+  }
+  setZoom(s, e);
+}
+
+let markHintTimer;
+document.querySelectorAll('#view-btns button[data-mark]').forEach((btn) => {
+  const which = btn.dataset.mark;
+  const ghost = $('mark-ghost');
+  let drag = null;
+  btn.addEventListener('pointerdown', (e) => {
+    if (btn.disabled || e.button > 0 || !raw) return;
+    e.preventDefault();
+    try { btn.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+    drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, moved: false, hit: null };
+  });
+  btn.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    if (!drag.moved && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 6) return;
+    drag.moved = true;
+    const hit = timeAtPoint(e.clientX, e.clientY);
+    if (hit) hit.snapped = snapMark(hit.t);
+    drag.hit = hit;
+    ghost.hidden = false;
+    ghost.style.left = `${e.clientX}px`;
+    ghost.style.top = `${e.clientY}px`;
+    ghost.textContent = hit ? `${which === 'start' ? 'Start' : 'End'}: ${markLabel(hit.snapped)}` : `Drop on the chart to set the ${which}`;
+    ghost.classList.toggle('off', !hit);
+    showGuide(which, hit);
+  });
+  const end = (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const { moved, hit } = drag;
+    drag = null;
+    ghost.hidden = true;
+    $('mark-guide').hidden = true;
+    if (moved && hit && e.type === 'pointerup') applyMark(which, hit.snapped);
+    if (!moved) {
+      setStatus(`Drag this mark onto the chart to set the ${which} of the view.`);
+      clearTimeout(markHintTimer);
+      markHintTimer = setTimeout(() => setStatus(''), 3000);
+    }
+  };
+  btn.addEventListener('pointerup', end);
+  btn.addEventListener('pointercancel', end);
 });
 
 // Which model(s) produced the data, spelled out for "Auto".
@@ -1060,19 +1181,51 @@ function computeTitles(keys) {
     const missing = total - s.n[0];
     if (missing > 0) extra.push(`${missing} of ${total} h missing`);
     t.extra = extra.join(' · ');
+    t.when = periodWhen(rawWindow.S, rawWindow.E, period.tz);
     titles[k] = t;
   }
   return titles;
 }
 
+// "from Mon 19 Oct 14:00 to Thu 22 Oct 2026 14:00", or "from Thu 1 Oct to Sat 31 Oct 2026" when the period runs
+// from midnight to midnight (the end then names the last day included). The year is written once
+// when both ends share it.
+function periodWhen(S, E, z) {
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const WDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const p2 = (n) => String(n).padStart(2, '0');
+  const a = new Date(wallMs(S, z)), b = new Date(wallMs(E, z));
+  const atMidnight = (d) => d.getUTCHours() === 0 && d.getUTCMinutes() === 0;
+  const daysOnly = atMidnight(a) && atMidnight(b);
+  const last = daysOnly ? new Date(b.getTime() - 86400e3) : b;
+  const day = (d, withYear) => `${WDAY[d.getUTCDay()]} ${d.getUTCDate()} ${MON[d.getUTCMonth()]}${withYear ? ` ${d.getUTCFullYear()}` : ''}`;
+  const hm = (d) => (daysOnly ? '' : ` ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`);
+  const sameYear = a.getUTCFullYear() === last.getUTCFullYear();
+  return `from ${day(a, !sameYear)}${hm(a)} to ${day(last, true)}${hm(b)}`;
+}
+
 function renderResults() {
   if (!raw || !period) return false;
   const keys = state.vars.filter((k) => k in raw.values);
-  if (!keys.length) { clearResults(); return false; }
+  if (typeof echarts === 'undefined') { setStatus('Chart library could not be loaded (offline?).', 'error'); return false; }
+  $('view-btns').hidden = false;
+  document.querySelectorAll('#view-btns button').forEach((b) => { b.disabled = !keys.length; });
+  if (!keys.length) {
+    // No variable selected: the time axes and the time bar stay, the chart is empty with a message.
+    lastX = []; lastStart = []; lastEnd = []; lastShadow = [];
+    $('btn-chart-mode').hidden = true;
+    $('btn-fullscreen').hidden = false;
+    const range = { min: wallMs(axis.S, raw.tz), max: wallMs(axis.E, raw.tz) };
+    renderEmpty($('charts'), state.agg, 'No data selected\nChoose a variable in the Data tab', { range, zoom: zoomWin, onZoom: onChartZoom });
+    $('rangebar').hidden = false;
+    rangeBar.update({ ...chartRange, start: zoomWin ? zoomWin.startMs : chartRange.min, end: zoomWin ? zoomWin.endMs : chartRange.max,
+      shadow: [], unit: state.agg });
+    $('model-used').textContent = '';
+    return true;
+  }
   if (!raw.times.length) { setStatus('No data returned for this period.', 'error'); return false; }
   const titles = buildTitles(keys);
 
-  $('view-btns').hidden = false;
   $('btn-fullscreen').hidden = false;
   const modeBtn = $('btn-chart-mode');
   const combined = state.chartMode === 'combined';
@@ -1080,7 +1233,6 @@ function renderResults() {
   modeBtn.setAttribute('aria-pressed', combined);
   modeBtn.title = combined ? 'Separate charts' : 'Combine charts';
   modeBtn.setAttribute('aria-label', modeBtn.title);
-  if (typeof echarts === 'undefined') { setStatus('Chart library could not be loaded (offline?).', 'error'); return false; }
 
   // Running totals start with the bar that contains the left edge of the view.
   const cumFrom = zoomWin ? bucketBounds(zoomWin.startMs + 1, state.agg)[0] : -Infinity;

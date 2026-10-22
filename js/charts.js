@@ -1,7 +1,7 @@
 // ECharts rendering: one synced chart per variable ("stacked") or a single multi-axis chart ("combined").
 // When only the data or the time range changes, existing charts are updated in place (no flicker).
-import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=24';
-import { fmtWall, STEP_MS } from './data.js?v=24';
+import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=29';
+import { fmtWall, STEP_MS } from './data.js?v=29';
 
 const PALETTE = ['#2f7fd8', '#e8743b', '#19a979', '#945ecf', '#d4526e', '#13a4b4', '#ce8f1f', '#6b7a8f'];
 const GROUP = 'rain-archive';
@@ -201,7 +201,7 @@ function attachTouch(chart, el) {
 function titleEl(key, color) {
   const el = document.createElement('div');
   el.className = 'chart-title';
-  el.innerHTML = '<span class="dot"></span><span class="name"></span> <span class="agg">(<span class="k"></span> <b></b>)</span><span class="extra"></span>';
+  el.innerHTML = '<span class="dot"></span><span class="name"></span> <span class="agg">(<span class="k"></span> <b></b><span class="when"></span>)</span><span class="extra"></span>';
   el.querySelector('.dot').style.background = color;
   el.querySelector('.name').textContent = VAR_BY_KEY[key].label;
   return el;
@@ -209,6 +209,7 @@ function titleEl(key, color) {
 function fillTitle(el, t) {
   el.querySelector('.k').textContent = t?.agg || '';
   el.querySelector('b').textContent = t?.value || '–';
+  el.querySelector('.when').textContent = t?.when ? ` ${t.when}` : ''; // "from 19 Oct 14:00 to 22 Oct 2026 14:00"
   const ex = el.querySelector('.extra');
   ex.textContent = t?.extra || '';
   ex.hidden = !t?.extra;
@@ -340,6 +341,54 @@ function baseOption(gran, theme, tooltipFmt, gridRight, gridLeft, zoom) {
 
 function themeColors() {
   return { text: css('--text'), muted: css('--muted'), line: css('--line'), grid: css('--chart-grid'), major: css('--chart-major'), card: css('--card') };
+}
+
+/**
+ * An empty chart over opts.range (same time axes, zoom and gestures as a real one) with a message in
+ * the middle — used when no variable is selected.
+ */
+export function renderEmpty(container, gran, message, opts = {}) {
+  const theme = themeColors();
+  Object.assign(chartRange, opts.range, { minSpan: 3 * 3600e3 });
+  const zoom = opts.zoom;
+  const span = zoom ? zoom.endMs - zoom.startMs : chartRange.max - chartRange.min;
+  if (!instances.length) plotWidth = Math.max(120, container.clientWidth - 112);
+  tickUnit = unitFor(span);
+  topShown = topFor(span);
+  view.s = zoom ? Math.max(chartRange.min, zoom.startMs) : chartRange.min;
+  view.e = zoom ? Math.min(chartRange.max, zoom.endMs) : chartRange.max;
+  const opt = baseOption(gran, theme, () => '', 56, 56, zoom);
+  opt.tooltip.show = false;
+  opt.yAxis = [{ type: 'value', min: 0, max: 1, axisLabel: { show: false }, splitLine: { lineStyle: { color: theme.grid } } }];
+  opt.series = [];
+  opt.graphic = [{ type: 'text', left: 'center', top: 'middle', silent: true,
+    style: { text: message, fill: theme.muted, fontSize: 14, textAlign: 'center', lineHeight: 20 } }];
+
+  const sig = `empty|${gran}|${theme.text}`;
+  if (current && current.sig === sig && instances.length === 1) {
+    instances[0].setOption(opt);
+    measurePlot();
+    return;
+  }
+  disposeCharts();
+  container.innerHTML = '';
+  container.style.setProperty('--n', 1);
+  const el = document.createElement('div');
+  el.className = 'chart last';
+  container.append(el);
+  const chart = echarts.init(el, null, { renderer: 'canvas' });
+  chart.setOption(opt);
+  chart.on('datazoom', () => {
+    const { min, max } = chartRange;
+    const dz = chart.getOption().dataZoom[0];
+    const startMs = min + (dz.start / 100) * (max - min), endMs = min + (dz.end / 100) * (max - min);
+    refreshLabels(chart, startMs, endMs, gran, theme);
+    opts.onZoom?.({ startMs, endMs });
+  });
+  if (IS_TOUCH) attachTouch(chart, el);
+  instances.push(chart);
+  current = { sig, titleEls: {}, gran, theme };
+  measurePlot();
 }
 
 /**
