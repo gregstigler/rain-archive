@@ -92,7 +92,7 @@ main { width: 90%; margin: 0 auto; padding: 10px 0 8px; }
 .small { font-size: 13px; }
 
 input, select, button { font: inherit; color: inherit; }
-input[type="search"], input[type="number"], input[type="datetime-local"], select {
+input[type="search"], input[type="text"], input[type="number"], input[type="datetime-local"], select {
   width: 100%; min-height: 40px; padding: 8px 10px;
   border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
 }
@@ -168,7 +168,7 @@ details.sub > summary { font-weight: 400; }
 
 .toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
 .view-btns { display: flex; gap: 3px; flex-wrap: wrap; }
-.view-btns .btn.small { padding: 3px 5px; font-size: 12px; min-width: 28px; }
+.view-btns .btn.small { padding: 3px 4px; font-size: 12px; min-width: 26px; }
 .toolbar .btn.icon { width: 28px; }
 .tool-icons { gap: 3px; }
 .view-btns .btn.active { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
@@ -192,17 +192,57 @@ details.sub > summary { font-weight: 400; }
 .chart { width: 100%; height: 230px; touch-action: pan-y; }
 .chart.last { height: 230px; }
 
-/* Time bar: the window can be dragged; a long press on an edge unlocks resizing that edge. */
-.rangebar {
-  position: relative; height: 30px; margin: 4px 0 2px; border: 1px solid var(--line); border-radius: 6px;
-  background: var(--card); touch-action: none; user-select: none; cursor: pointer; overflow: hidden;
+/* Time-step stepper in the toolbar: ‹ /h › */
+.stepper { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.stepper .btn.icon { border: 0; background: none; width: 22px; min-height: 30px; }
+.stepper .btn.icon:disabled { opacity: .3; }
+.step-label { min-width: 26px; text-align: center; font-size: 13px; font-weight: 700; }
+
+/* Combine / full-screen icons sit at the top right of the charts. */
+.charts-wrap { position: relative; }
+.chart-tools { position: absolute; top: 8px; right: 0; display: flex; gap: 3px; z-index: 2; }
+#charts > .chart-title:first-child { padding-right: 66px; }
+
+/* Long-press menu of a favorite */
+.menu {
+  position: fixed; z-index: 700; display: grid; min-width: 170px; padding: 4px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 28px rgba(0, 0, 0, .25);
 }
-.rb-shadow { position: absolute; inset: 0; width: 100%; height: 100%; }
-.rb-shadow path { fill: var(--accent); opacity: .22; }
+.menu button { text-align: left; padding: 9px 10px; border: 0; background: none; border-radius: 6px; cursor: pointer; font: inherit; color: inherit; }
+.menu button:hover, .menu button:focus { background: var(--accent-soft); outline: none; }
+.menu button.danger { color: var(--danger); }
+.chip.fav { padding: 5px 11px; cursor: pointer; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.chip.dragging { opacity: .75; z-index: 5; position: relative; box-shadow: 0 6px 16px rgba(0, 0, 0, .2); }
+.chip.drop { border-color: var(--accent); border-style: dashed; }
+
+/* Favorite star on the map */
+.btn.star { font-size: 20px; line-height: 1; padding: 4px 10px; color: var(--muted); }
+.btn.star.on { color: #e0a800; border-color: #e0a800; }
+
+/* Location tab: current place in bold blue */
+#tab-location { color: var(--accent); font-weight: 700; }
+
+#fav-coords-row { gap: 8px; }
+#fav-coords-row .field { flex: 1; }
+#fav-dialog input[type="text"], #fav-dialog input[type="number"] { width: 100%; }
+
+/* Time bar: the window can be dragged; a long press on an edge (or two fingers) resizes it. */
+.rangebar { margin: 4px 0 2px; user-select: none; }
+.rb-track {
+  position: relative; height: 30px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--card); touch-action: none; cursor: pointer; overflow: hidden;
+}
+.rb-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.rb-ticks line { stroke: var(--chart-grid); stroke-width: 1; }
+.rb-shadow { fill: var(--accent); opacity: .22; }
 .rb-thumb {
   position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--accent) 16%, transparent);
   border: 1.5px solid var(--accent); border-radius: 5px; cursor: grab;
+  transition: left .25s ease, width .25s ease; /* smooth when the bar re-centres itself */
 }
+.rangebar.dragging .rb-thumb { transition: none; }
+.rb-labels { position: relative; height: 16px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.rb-lab { position: absolute; top: 2px; white-space: nowrap; }
 .rb-h { position: absolute; top: 6px; bottom: 6px; width: 4px; border-radius: 2px; background: var(--accent); opacity: .55; }
 .rb-l { left: 2px; }
 .rb-r { right: 2px; }

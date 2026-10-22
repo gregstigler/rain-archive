@@ -10,10 +10,10 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="css/app.css?v=10">
+  <link rel="stylesheet" href="css/app.css?v=15">
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js" defer></script>
-  <script type="module" src="js/app.js?v=10"></script>
+  <script type="module" src="js/app.js?v=15"></script>
 </head>
 <body>
   <header class="topbar" id="topbar">
@@ -109,9 +109,11 @@
 
     <details id="step-box" open>
       <summary>Time step</summary>
-      <div class="seg" role="radiogroup" aria-label="Time step: one bar or point per hour or per day">
-        <label><input type="radio" name="agg" value="hour" checked><span>Per hour</span></label>
-        <label><input type="radio" name="agg" value="day"><span>Per day</span></label>
+      <div class="seg" role="radiogroup" aria-label="Time step: one bar or point per hour, day, month or year">
+        <label><input type="radio" name="agg" value="hour" checked><span>Hour</span></label>
+        <label><input type="radio" name="agg" value="day"><span>Day</span></label>
+        <label><input type="radio" name="agg" value="month"><span>Month</span></label>
+        <label><input type="radio" name="agg" value="year"><span>Year</span></label>
       </div>
     </details>
 
@@ -145,24 +147,37 @@
           <button type="button" class="btn small" data-view="72">3 d</button>
           <button type="button" class="btn small" data-view="168">1 w</button>
           <button type="button" class="btn small" data-view="720">1 m</button>
+          <button type="button" class="btn small" data-view="8760">1 y</button>
         </div>
         <div class="tool-icons">
-          <button type="button" id="btn-chart-mode" class="btn icon" aria-pressed="false" title="Combine charts" aria-label="Combine charts" hidden>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l5-6 4 4 5-8 4 5"/><path d="M3 20h18"/><path d="M3 13l5 2 4-3 5 3 4-2" opacity=".55"/></svg>
-          </button>
-          <button type="button" id="btn-step" class="btn icon step" title="Time step: per hour (tap for per day)" aria-label="Time step: per hour">/h</button>
-          <button type="button" id="btn-fullscreen" class="btn icon" title="Full screen" aria-label="Full screen" hidden>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
-          </button>
+          <!-- Time step: finer ‹ current › coarser (hour → day → month → year) -->
+          <div class="stepper" role="group" aria-label="Time step">
+            <button type="button" id="btn-finer" class="btn icon" title="Finer time step" aria-label="Finer time step">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+            </button>
+            <span id="step-label" class="step-label" aria-live="polite">/h</span>
+            <button type="button" id="btn-coarser" class="btn icon" title="Coarser time step" aria-label="Coarser time step">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+            </button>
+          </div>
           <button type="button" id="btn-refresh" class="btn icon primary" title="Refresh" aria-label="Refresh">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
           </button>
         </div>
       </div>
       <div id="status" class="status" role="status"></div>
-      <div id="charts"></div>
-      <div id="rangebar" class="rangebar" hidden aria-label="Visible time window: drag to move, long-press an edge to resize"></div>
-      <p id="source-note" class="muted small"></p>
+      <div class="charts-wrap">
+        <div class="chart-tools">
+          <button type="button" id="btn-chart-mode" class="btn icon" aria-pressed="false" title="Combine charts" aria-label="Combine charts" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l5-6 4 4 5-8 4 5"/><path d="M3 20h18"/><path d="M3 13l5 2 4-3 5 3 4-2" opacity=".55"/></svg>
+          </button>
+          <button type="button" id="btn-fullscreen" class="btn icon" title="Full screen" aria-label="Full screen" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+          </button>
+        </div>
+        <div id="charts"></div>
+      </div>
+      <div id="rangebar" class="rangebar" hidden aria-label="Visible time window: drag to move, long-press an edge or use two fingers to resize"></div>
     </section>
   </main>
 
@@ -178,15 +193,32 @@
     <div class="confirm-btns" id="slow-btns"></div>
   </dialog>
 
+  <dialog id="fav-dialog" class="confirm">
+    <p><strong id="fav-title"></strong></p>
+    <label class="field first" id="fav-name-row"><span>Name</span><input id="fav-name" type="text" autocomplete="off"></label>
+    <div class="row" id="fav-coords-row">
+      <label class="field first"><span>Latitude</span><input id="fav-lat" type="number" step="0.0001" min="-90" max="90" inputmode="decimal"></label>
+      <label class="field first"><span>Longitude</span><input id="fav-lon" type="number" step="0.0001" min="-180" max="180" inputmode="decimal"></label>
+    </div>
+    <p id="fav-error" class="small status error"></p>
+    <div class="confirm-btns">
+      <button type="button" class="btn primary" id="fav-save">Save</button>
+      <button type="button" class="btn" id="fav-cancel">Cancel</button>
+    </div>
+  </dialog>
+
   <dialog id="map-dialog">
     <div class="dialog-head">
-      <strong>Tap the map to pick a point</strong>
+      <strong id="map-title">Tap the map to pick a point</strong>
       <button type="button" class="btn small" id="map-close" aria-label="Close">✕</button>
     </div>
     <div id="map"></div>
     <div class="dialog-foot">
       <span id="map-picked" class="muted small">No point selected.</span>
-      <button type="button" class="btn primary" id="map-use" disabled>Use this point</button>
+      <div class="row">
+        <button type="button" class="btn star" id="map-star" disabled title="Add this point to favorites" aria-label="Favorite">☆</button>
+        <button type="button" class="btn primary" id="map-use" disabled>Use this point</button>
+      </div>
     </div>
   </dialog>
 </body>

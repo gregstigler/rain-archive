@@ -1,5 +1,5 @@
 // Time-zone helpers, Open-Meteo requests and aggregation.
-import { VAR_BY_KEY, baseUnit, displayUnit, convert } from './vars.js?v=10';
+import { VAR_BY_KEY, baseUnit, displayUnit, convert } from './vars.js?v=15';
 
 const ARCHIVE = 'https://archive-api.open-meteo.com/v1/archive';
 const FORECAST = 'https://api.open-meteo.com/v1/forecast';
@@ -8,6 +8,9 @@ const GEOCODE ='https://geocoding-api.open-meteo.com/v1/search';
 const REVERSE = 'https://nominatim.openstreetmap.org/reverse';
 
 export const HOUR = 3600;
+// Typical length of one bar for each time step (ms); months and years vary, this is for spacing.
+export const STEP_MS = { hour: 3600e3, day: 86400e3, month: 30.436875 * 86400e3, year: 365.2425 * 86400e3 };
+export const STEPS = ['hour', 'day', 'month', 'year'];
 const FORECAST_PAST_DAYS = 92;
 
 // ---------- Time zones ----------
@@ -242,25 +245,36 @@ function reduce(kind, arr) {
 }
 
 /**
- * mode: 'hour' | 'day' | 'total'.
- * Returns { x: [wall ms], hours: [hours per bucket], series: {key: {unit, val[], min[], max[], cum[]|null, n[]}} }
+ * mode: 'hour' | 'day' | 'month' | 'year' | 'total'.
+ * Returns { x, start, end: [wall ms], hours: [hours per bucket], series: {key: {unit, val[], min[], max[], cum[]|null, n[]}} }.
+ * Each bucket covers [start, end) in local wall time and is drawn at its middle x.
+ * Running totals (cum) start at the first bucket that begins at or after cumFromMs.
  * Values are converted to display units.
  */
-export function aggregate(raw, keys, mode, units) {
+export function aggregate(raw, keys, mode, units, cumFromMs = -Infinity) {
   const { times, values, tz } = raw;
-  const buckets = []; // {x, idx: []}
+  const buckets = []; // {start, end, idx: []}
   if (mode === 'hour') {
-    times.forEach((t, i) => buckets.push({ x: wallMs(t, tz), idx: [i] }));
-  } else if (mode === 'day') {
-    const byDay = new Map();
+    // An hourly value stamped hh:00 covers the hour before it.
+    times.forEach((t, i) => { const e = wallMs(t, tz); buckets.push({ start: e - 3600e3, end: e, idx: [i] }); });
+  } else if (mode === 'day' || mode === 'month' || mode === 'year') {
+    const byKey = new Map();
     times.forEach((t, i) => {
-      // An hourly stamp at 00:00 covers 23:00–24:00 of the previous day.
-      const key = Math.floor(wallMs(t - 1, tz) / 86400e3) * 86400e3; // local midnight, as wall ms
-      if (!byDay.has(key)) { byDay.set(key, { x: key, idx: [] }); buckets.push(byDay.get(key)); }
-      byDay.get(key).idx.push(i);
+      // A stamp at 00:00 belongs to the day (month, year) that just ended.
+      const w = wallMs(t - 1, tz);
+      let start, end;
+      if (mode === 'day') { start = Math.floor(w / 86400e3) * 86400e3; end = start + 86400e3; }
+      else {
+        const d = new Date(w), y = d.getUTCFullYear(), m = d.getUTCMonth();
+        start = mode === 'month' ? Date.UTC(y, m, 1) : Date.UTC(y, 0, 1);
+        end = mode === 'month' ? Date.UTC(y, m + 1, 1) : Date.UTC(y + 1, 0, 1);
+      }
+      if (!byKey.has(start)) { byKey.set(start, { start, end, idx: [] }); buckets.push(byKey.get(start)); }
+      byKey.get(start).idx.push(i);
     });
   } else {
-    buckets.push({ x: times.length ? wallMs(times[times.length - 1], tz) : 0, idx: times.map((_, i) => i) });
+    const e = times.length ? wallMs(times[times.length - 1], tz) : 0;
+    buckets.push({ start: e, end: e, idx: times.map((_, i) => i) });
   }
 
   const series = {};
@@ -276,9 +290,17 @@ export function aggregate(raw, keys, mode, units) {
       s.min.push(convert(r.min ?? null, from, unit));
       s.max.push(convert(r.max ?? null, from, unit));
       s.n.push(r.n);
-      if (s.cum) { if (r.val != null) run += r.val; s.cum.push(convert(run, from, unit)); }
+      // Running total: 0 at cumFromMs (the left edge of the view), nothing before it.
+      if (s.cum) {
+        if (b.start < cumFromMs) { s.cum.push(null); continue; }
+        if (r.val != null) run += r.val;
+        s.cum.push(convert(run, from, unit));
+      }
     }
     series[k] = s;
   }
-  return { x: buckets.map((b) => b.x), hours: buckets.map((b) => b.idx.length), series };
+  return {
+    x: buckets.map((b) => (b.start + b.end) / 2), start: buckets.map((b) => b.start), end: buckets.map((b) => b.end),
+    hours: buckets.map((b) => b.idx.length), series,
+  };
 }

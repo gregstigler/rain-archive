@@ -1,13 +1,13 @@
 import {
   VARS, VAR_BY_KEY, QUICK_VARS, FAMILIES, MODELS, IFS_FROM, pre2017Source, defaultUnits, decimals, wmoLabel, compass,
-} from './vars.js?v=10';
+} from './vars.js?v=15';
 import {
-  HOUR, searchPlaces, resolvePoint, getElevation, fetchHourly, aggregate,
-  zonedToUnix, unixToZonedInput, floorLocalHour, wallMs, fmtWall, fmtDuration,
+  HOUR, STEP_MS, STEPS, searchPlaces, resolvePoint, getElevation, fetchHourly, aggregate,
+  zonedToUnix, unixToZonedInput, floorLocalHour, wallMs, tzOffset, fmtWall, fmtDuration,
   DURATION_UNITS, subtractDuration, bestDuration,
-} from './data.js?v=10';
-import { renderCharts, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=10';
-import { createRangeBar } from './rangebar.js?v=10';
+} from './data.js?v=15';
+import { renderCharts, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=15';
+import { createRangeBar } from './rangebar.js?v=15';
 
 const $ = (id) => document.getElementById(id);
 const STORE_KEY = 'rain-archive-state';
@@ -16,8 +16,11 @@ const MAX_SPAN_DAYS = 366 * 20;
 
 // ---------- State ----------
 
+const LAUSANNE = { name: 'Lausanne', region: 'Vaud, Switzerland', lat: 46.516, lon: 6.6328, elevation: 495, tz: 'Europe/Zurich' };
+
 const state = {
-  loc: null,
+  loc: LAUSANNE,         // first launch
+
   favorites: [],
   otherMode: 'end',
   endNow: true,          // "Up to now": the end follows the current hour
@@ -29,8 +32,8 @@ const state = {
   units: defaultUnits(),
   model: 'best_match',
 };
-let raw = null;          // last fetched hourly data (raw.loadedS: start of loaded data, may precede the period)
-let rawWindow = null;    // {S, E} of the selected period
+let raw = null;          // hourly data behind the chart (see "Data model" below)
+let rawWindow = null;    // {S, E} of the saved period
 let zoomWin = null;      // visible chart window {startMs, endMs} in wall ms, kept across re-renders
 
 function load() {
@@ -49,7 +52,8 @@ function load() {
     }
   } catch { /* storage unavailable */ }
   state.vars = state.vars.filter((k) => VAR_BY_KEY[k]);
-  if (!['hour', 'day'].includes(state.agg)) state.agg = 'hour'; // the old "whole period" mode is now in chart titles
+  if (!STEPS.includes(state.agg)) state.agg = 'hour'; // the old "whole period" mode is now in chart titles
+  if (!state.loc) state.loc = LAUSANNE;
 }
 function save() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch { /* ignore */ }
@@ -92,7 +96,7 @@ function updateTabs() {
   }
   $('tab-period').textContent = p;
   const first = state.vars[0] ? VAR_BY_KEY[state.vars[0]].label : 'None';
-  const aggTxt = { day: 'daily', hour: 'hourly' }[state.agg];
+  const aggTxt = { hour: 'hourly', day: 'daily', month: 'monthly', year: 'yearly' }[state.agg];
   $('tab-data').textContent = `${first}${state.vars.length > 1 ? ` +${state.vars.length - 1}` : ''} · ${aggTxt}`;
 }
 
@@ -140,34 +144,166 @@ function renderLocation() {
 
 const sameLoc = (a, b) => a && b && Math.abs(a.lat - b.lat) < 1e-3 && Math.abs(a.lon - b.lon) < 1e-3;
 const isFavorite = (loc) => state.favorites.some((f) => sameLoc(f, loc));
+const favAt = (loc) => state.favorites.find((f) => sameLoc(f, loc));
+function setFavorites(list) {
+  state.favorites = list;
+  save();
+  renderLocation();
+  refreshMapFavorites();
+}
+
+// ---------- Favorites ----------
+// Tap: show that place. Long press: menu (rename, move on map, edit coordinates, delete).
+// Press and drag onto another favorite: reorder.
+
+const LONG_PRESS_MS = 500;
 
 function renderFavorites() {
   const box = $('favorites');
   box.innerHTML = '';
-  for (const f of state.favorites) {
-    const chip = document.createElement('span');
-    chip.className = 'chip' + (sameLoc(f, state.loc) ? ' active' : '');
-    const go = document.createElement('button');
-    go.type = 'button';
-    go.textContent = `★ ${f.name}`;
-    go.title = [f.name, f.region].filter(Boolean).join(', ');
-    go.onclick = () => setLocation(f);
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.textContent = '✕';
-    del.setAttribute('aria-label', `Remove ${f.name} from favorites`);
-    del.onclick = () => { state.favorites = state.favorites.filter((x) => x !== f); save(); renderLocation(); };
-    chip.append(go, del);
+  state.favorites.forEach((f, i) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chip fav' + (sameLoc(f, state.loc) ? ' active' : '');
+    chip.textContent = `★ ${f.name}`;
+    chip.title = 'Tap: show · Long press: options · Drag: reorder';
+    chip.dataset.i = i;
+    attachChipGestures(chip, f);
     box.append(chip);
+  });
+}
+
+function attachChipGestures(chip, fav) {
+  let g = null;
+  chip.addEventListener('pointerdown', (e) => {
+    if (e.button > 0) return;
+    try { chip.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+    g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, moved: false, long: false, over: null };
+    g.timer = setTimeout(() => {
+      if (!g || g.moved) return;
+      g.long = true;
+      navigator.vibrate?.(25);
+      openFavMenu(chip, fav);
+    }, LONG_PRESS_MS);
+  });
+  chip.addEventListener('pointermove', (e) => {
+    if (!g || e.pointerId !== g.id || g.long) return;
+    const dx = e.clientX - g.x0, dy = e.clientY - g.y0;
+    if (!g.moved && Math.hypot(dx, dy) < 8) return;
+    if (!g.moved) { g.moved = true; clearTimeout(g.timer); chip.classList.add('dragging'); }
+    chip.style.transform = `translate(${dx}px, ${dy}px)`;
+    chip.style.pointerEvents = 'none';
+    const over = document.elementFromPoint(e.clientX, e.clientY)?.closest('#favorites .chip');
+    chip.style.pointerEvents = '';
+    g.over = over && over !== chip ? Number(over.dataset.i) : null;
+    document.querySelectorAll('#favorites .chip').forEach((c) => c.classList.toggle('drop', Number(c.dataset.i) === g.over));
+  });
+  const end = (e) => {
+    if (!g || e.pointerId !== g.id) return;
+    clearTimeout(g.timer);
+    const { moved, long, over } = g;
+    g = null;
+    chip.classList.remove('dragging');
+    chip.style.transform = '';
+    if (long) return;
+    if (moved) {
+      if (over != null) {
+        const list = [...state.favorites];
+        list.splice(list.indexOf(fav), 1);
+        list.splice(over, 0, fav);
+        setFavorites(list);
+      } else renderFavorites();
+      return;
+    }
+    if (e.type === 'pointerup') setLocation(fav);
+  };
+  chip.addEventListener('pointerup', end);
+  chip.addEventListener('pointercancel', end);
+  chip.addEventListener('contextmenu', (e) => e.preventDefault());
+  chip.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setLocation(fav); } });
+}
+
+function closeFavMenu() { $('fav-menu')?.remove(); }
+function openFavMenu(chip, fav) {
+  closeFavMenu();
+  const m = document.createElement('div');
+  m.id = 'fav-menu';
+  m.className = 'menu';
+  m.setAttribute('role', 'menu');
+  const items = [
+    ['Rename', () => editFav(fav, 'rename')],
+    ['Move on map', () => openMap({ moveFav: fav })],
+    ['Edit coordinates', () => editFav(fav, 'coords')],
+    ['Delete', () => setFavorites(state.favorites.filter((x) => x !== fav))],
+  ];
+  for (const [label, run] of items) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('role', 'menuitem');
+    b.textContent = label;
+    if (label === 'Delete') b.className = 'danger';
+    b.onclick = () => { closeFavMenu(); run(); };
+    m.append(b);
   }
+  document.body.append(m);
+  const r = chip.getBoundingClientRect();
+  m.style.left = `${Math.min(Math.max(8, r.left), innerWidth - m.offsetWidth - 8)}px`;
+  m.style.top = `${Math.min(r.bottom + 4, innerHeight - m.offsetHeight - 8)}px`;
+  setTimeout(() => document.addEventListener('pointerdown', function away(e) {
+    if (!e.target.closest('#fav-menu')) { closeFavMenu(); document.removeEventListener('pointerdown', away); }
+  }), 0);
+}
+
+// Rename or edit coordinates in a small dialog.
+function editFav(fav, what) {
+  const dlgF = $('fav-dialog');
+  $('fav-title').textContent = what === 'rename' ? 'Rename favorite' : `Coordinates of ${fav.name}`;
+  $('fav-name-row').hidden = what !== 'rename';
+  $('fav-coords-row').hidden = what !== 'coords';
+  $('fav-name').value = fav.name;
+  $('fav-lat').value = fav.lat;
+  $('fav-lon').value = fav.lon;
+  $('fav-error').textContent = '';
+  dlgF.showModal();
+  $('fav-save').onclick = async () => {
+    if (what === 'rename') {
+      const name = $('fav-name').value.trim();
+      if (!name) { $('fav-error').textContent = 'Enter a name.'; return; }
+      updateFav(fav, { name });
+      dlgF.close();
+      return;
+    }
+    const lat = Number($('fav-lat').value), lon = Number($('fav-lon').value);
+    if (!(Math.abs(lat) <= 90) || !(Math.abs(lon) <= 180) || $('fav-lat').value === '' || $('fav-lon').value === '') {
+      $('fav-error').textContent = 'Latitude −90…90, longitude −180…180.';
+      return;
+    }
+    $('fav-error').textContent = 'Updating…';
+    try { await moveFav(fav, lat, lon); dlgF.close(); }
+    catch (e) { $('fav-error').textContent = `Failed: ${e.message}`; }
+  };
+}
+$('fav-cancel').onclick = () => $('fav-dialog').close();
+
+function updateFav(fav, changes) {
+  const wasCurrent = sameLoc(fav, state.loc);
+  const next = { ...fav, ...changes };
+  state.favorites = state.favorites.map((f) => (f === fav ? next : f));
+  if (wasCurrent) { state.loc = { ...next }; save(); renderLocation(); updateTabs(); scheduleFetch(0); }
+  setFavorites(state.favorites);
+  return next;
+}
+
+// New position for a favorite: keep its name, refresh elevation and time zone.
+async function moveFav(fav, lat, lon) {
+  const p = await resolvePoint(lat, lon);
+  return updateFav(fav, { lat: p.lat, lon: p.lon, elevation: p.elevation, tz: p.tz });
 }
 
 $('btn-fav').onclick = () => {
   if (!state.loc) return;
-  if (isFavorite(state.loc)) state.favorites = state.favorites.filter((f) => !sameLoc(f, state.loc));
-  else state.favorites.push({ ...state.loc });
-  save();
-  renderLocation();
+  if (isFavorite(state.loc)) setFavorites(state.favorites.filter((f) => !sameLoc(f, state.loc)));
+  else setFavorites([...state.favorites, { ...state.loc }]);
 };
 
 // Search
@@ -228,11 +364,60 @@ $('btn-gps').onclick = () => {
   );
 };
 
-// Map picker
-let map, marker, picked;
+// ---------- Map ----------
+// Favorites are yellow pins; tapping one selects it. The star next to "Use this point" shows
+// whether the selected point is a favorite and toggles it. In "move favorite" mode the button
+// saves the new position instead.
+
+let map, marker, favLayer, picked = null, mapMode = null;
 const dlg = $('map-dialog');
-$('btn-map').onclick = () => {
+
+function refreshMapFavorites() {
+  if (!favLayer) return;
+  favLayer.clearLayers();
+  for (const f of state.favorites) {
+    L.circleMarker([f.lat, f.lon], { radius: 8, color: '#8a6d00', weight: 2, fillColor: '#ffd21f', fillOpacity: 0.95 })
+      .bindTooltip(f.name, { direction: 'top', offset: [0, -8] })
+      .on('click', (e) => { L.DomEvent.stopPropagation(e); pickPoint(f.lat, f.lon); })
+      .addTo(favLayer);
+  }
+  updateStar();
+}
+
+function updateStar() {
+  const star = $('map-star');
+  const fav = picked && favAt(picked);
+  star.disabled = !picked || !!mapMode;
+  star.textContent = fav ? '★' : '☆';
+  star.classList.toggle('on', !!fav);
+  star.title = fav ? `Remove ${fav.name} from favorites` : 'Add this point to favorites';
+}
+
+let elevAbort;
+async function pickPoint(lat, lon) {
+  picked = { lat, lon };
+  if (marker) marker.setLatLng([lat, lon]); else marker = L.marker([lat, lon]).addTo(map);
+  const fav = favAt(picked);
+  const txt = `${fav ? `${fav.name} · ` : ''}${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+  $('map-picked').textContent = `${txt} · … m`;
+  $('map-use').disabled = false;
+  updateStar();
+  elevAbort?.abort();
+  elevAbort = new AbortController();
+  const at = picked;
+  try {
+    const elev = await getElevation(lat, lon, elevAbort.signal);
+    if (picked === at) $('map-picked').textContent = `${txt}${elev != null ? ` · ${Math.round(elev)} m` : ''}`;
+  } catch (err) {
+    if (err.name !== 'AbortError' && picked === at) $('map-picked').textContent = txt;
+  }
+}
+
+function openMap(opts = {}) {
   if (typeof L === 'undefined') return setStatus('Map library could not be loaded (offline?).', 'error');
+  mapMode = opts.moveFav ? { moveFav: opts.moveFav } : null;
+  $('map-title').textContent = mapMode ? `Tap the new position of ${mapMode.moveFav.name}` : 'Tap the map to pick a point';
+  $('map-use').textContent = mapMode ? 'Save position' : 'Use this point';
   dlg.showModal();
   if (!map) {
     map = L.map('map', { worldCopyJump: true });
@@ -240,40 +425,57 @@ $('btn-map').onclick = () => {
       maxZoom: 17, subdomains: 'abc',
       attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, SRTM · style © <a href="https://opentopomap.org/">OpenTopoMap</a> (CC BY-SA)',
     }).addTo(map);
-    let elevAbort;
-    map.on('click', async (e) => {
-      picked = e.latlng.wrap();
-      if (marker) marker.setLatLng(e.latlng); else marker = L.marker(e.latlng).addTo(map);
-      const txt = `${picked.lat.toFixed(4)}°, ${picked.lng.toFixed(4)}°`;
-      $('map-picked').textContent = `${txt} · … m`;
-      $('map-use').disabled = false;
-      elevAbort?.abort();
-      elevAbort = new AbortController();
-      const at = picked;
-      try {
-        const elev = await getElevation(at.lat, at.lng, elevAbort.signal);
-        if (picked === at) $('map-picked').textContent = `${txt}${elev != null ? ` · ${Math.round(elev)} m` : ''}`;
-      } catch (err) {
-        if (err.name !== 'AbortError' && picked === at) $('map-picked').textContent = txt;
-      }
-    });
+    favLayer = L.layerGroup().addTo(map);
+    map.on('click', (e) => { const p = e.latlng.wrap(); pickPoint(p.lat, p.lng); });
   }
-  const c = state.loc ? [state.loc.lat, state.loc.lon] : [46.6, 2.5];
-  map.setView(c, state.loc ? 9 : 5);
+  refreshMapFavorites();
+  const center = mapMode ? mapMode.moveFav : state.loc;
+  const c = center ? [center.lat, center.lon] : [46.52, 6.63];
+  map.setView(c, center ? 10 : 6);
+  picked = null;
+  if (marker) { marker.remove(); marker = null; }
+  $('map-picked').textContent = 'No point selected.';
+  $('map-use').disabled = true;
+  updateStar();
   setTimeout(() => map.invalidateSize(), 50);
-};
+}
+$('btn-map').onclick = () => openMap();
 $('map-close').onclick = () => dlg.close();
 dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
+
+$('map-star').onclick = async () => {
+  if (!picked) return;
+  const fav = favAt(picked);
+  if (fav) { setFavorites(state.favorites.filter((f) => f !== fav)); pickPoint(picked.lat, picked.lon); return; }
+  $('map-star').disabled = true;
+  try {
+    const p = await resolvePoint(picked.lat, picked.lon);
+    setFavorites([...state.favorites, p]);
+    pickPoint(p.lat, p.lon);
+  } catch (e) {
+    $('map-picked').textContent = `Lookup failed: ${e.message}`;
+    updateStar();
+  }
+};
+
 $('map-use').onclick = async () => {
   if (!picked) return;
   $('map-use').disabled = true;
-  $('map-picked').textContent = 'Looking up the place…';
   try {
-    const loc = await resolvePoint(picked.lat, picked.lng);
+    if (mapMode) {
+      $('map-picked').textContent = 'Saving…';
+      await moveFav(mapMode.moveFav, picked.lat, picked.lon);
+      dlg.close();
+      return;
+    }
+    const fav = favAt(picked);
+    if (fav) { dlg.close(); setLocation(fav); return; }
+    $('map-picked').textContent = 'Looking up the place…';
+    const loc = await resolvePoint(picked.lat, picked.lon);
     dlg.close();
     setLocation(loc);
   } catch (e) {
-    $('map-picked').textContent = `Lookup failed: ${e.message}`;
+    $('map-picked').textContent = `Failed: ${e.message}`;
   } finally { $('map-use').disabled = false; }
 };
 
@@ -423,14 +625,20 @@ function applyVarFilter() {
   });
 }
 
-// Time step (hour/day): set from the Data panel or the "/h" "/d" toolbar button.
+// ---------- Time step (hour → day → month → year) ----------
+
+const STEP_LABEL = { hour: '/h', day: '/d', month: '/mo', year: '/y' };
+const STEP_NAME = { hour: 'per hour', day: 'per day', month: 'per month', year: 'per year' };
+
 function syncStepUI() {
   document.querySelector(`input[name="agg"][value="${state.agg}"]`).checked = true;
-  const b = $('btn-step');
-  const day = state.agg === 'day';
-  b.textContent = day ? '/d' : '/h';
-  b.title = day ? 'Time step: per day (tap for per hour)' : 'Time step: per hour (tap for per day)';
-  b.setAttribute('aria-label', day ? 'Time step: per day' : 'Time step: per hour');
+  const i = STEPS.indexOf(state.agg);
+  $('step-label').textContent = STEP_LABEL[state.agg];
+  $('step-label').title = `Time step: ${STEP_NAME[state.agg]}`;
+  $('btn-finer').disabled = i === 0;
+  $('btn-coarser').disabled = i === STEPS.length - 1;
+  $('btn-finer').title = i > 0 ? `Finer: ${STEP_NAME[STEPS[i - 1]]}` : 'Already the finest time step';
+  $('btn-coarser').title = i < STEPS.length - 1 ? `Coarser: ${STEP_NAME[STEPS[i + 1]]}` : 'Already the coarsest time step';
 }
 function setAgg(value) {
   state.agg = value;
@@ -440,7 +648,8 @@ function setAgg(value) {
   if (activeView && raw) applyView(activeView); else renderResults(); // re-fit the view to the new buckets
 }
 document.querySelectorAll('input[name="agg"]').forEach((r) => { r.onchange = () => setAgg(r.value); });
-$('btn-step').onclick = () => setAgg(state.agg === 'day' ? 'hour' : 'day');
+$('btn-finer').onclick = () => { const i = STEPS.indexOf(state.agg); if (i > 0) setAgg(STEPS[i - 1]); };
+$('btn-coarser').onclick = () => { const i = STEPS.indexOf(state.agg); if (i < STEPS.length - 1) setAgg(STEPS[i + 1]); };
 
 // ---------- Units & model ----------
 
@@ -470,7 +679,18 @@ function renderModels() {
   sel.onchange = () => { state.model = sel.value; save(); note(); scheduleFetch(0); };
 }
 
-// ---------- Fetch & results ----------
+// ---------- Data model ----------
+// period: hourly data of the saved period; the totals in the chart titles come from it.
+// raw:    hourly data behind the chart, contiguous over [raw.loadedS, raw.loadedE] (unix s).
+//         It starts as the period and grows (or is replaced) as the view moves.
+// axis:   the chart's time axis [axis.S, axis.E]: the visible window plus one window-width on each
+//         side (never before 1940 or after the current hour). The time bar shows this range, so the
+//         visible part always fills about a third of it. Data for the margins is fetched in the
+//         background; when the view comes near an edge, the axis re-centres on it and the charts
+//         are updated in place, without being rebuilt.
+
+let period = null;
+let axis = null;
 
 function setStatus(msg, kind = '') {
   const el = $('status');
@@ -484,6 +704,12 @@ function scheduleFetch(delay = 400) {
   fetchTimer = setTimeout(doFetch, delay);
 }
 
+const unwall = (ms) => { const s = ms / 1000; return s - tzOffset(s, raw.tz); }; // wall ms → unix s
+function axisAround(S, E) {
+  const span = E - S;
+  return { S: Math.max(MIN_DATE, floorLocalHour(S - span, tz())), E: Math.min(nowHour(), E + span) };
+}
+
 async function doFetch() {
   if (!state.loc) { setStatus('Search a place, use your position or pick one on the map to start.'); return; }
   if (!state.vars.length) { setStatus('Select at least one variable.'); clearResults(); return; }
@@ -491,19 +717,23 @@ async function doFetch() {
   if (w.error) { setStatus(w.error, 'error'); clearResults(); return; }
   fetchAbort?.abort();
   fetchAbort = new AbortController();
-  setStatus('Loading data…', 'loading');
   const ctrl = fetchAbort;
+  setStatus('Loading data…', 'loading');
   const done = watchSlow('Loading the data', () => ctrl.abort());
   try {
-    raw = await fetchHourly({ loc: state.loc, keys: [...state.vars], startSec: w.S, endSec: w.E, model: state.model, signal: fetchAbort.signal });
+    const p = await fetchHourly({ loc: state.loc, keys: [...state.vars], startSec: w.S, endSec: w.E, model: state.model, signal: ctrl.signal });
     done();
-    raw.loadedS = w.S;
-    raw.loadedE = w.E;
+    period = p;
+    raw = { ...p, loadedS: w.S, loadedE: w.E };
     rawWindow = w;
+    axis = axisAround(w.S, w.E);
     zoomWin = null;
-    setActiveView('period');
     setStatus('');
     renderResults();
+    zoomWin = viewWindow('period');
+    renderResults();
+    setActiveView('period');
+    fillAxis(); // the margins, in the background
   } catch (e) {
     done();
     if (e.name === 'AbortError') return;
@@ -512,27 +742,103 @@ async function doFetch() {
   }
 }
 
-// Reaching either end of the chart loads 3× the visible span beyond it (never past the current hour).
-let loadingEarlier = false, edgeTimer;
+// Downloads run one after the other so that the pieces of `raw` stay contiguous.
+let chain = Promise.resolve();
+const queue = (fn) => (chain = chain.then(fn, fn));
+
+// Make `raw` cover [S, E]: extend it on either side, or replace it when the range is far away.
+// Returns true when `raw` changed.
+async function ensureData(S, E) {
+  if (!raw) return false;
+  const target = raw;
+  S = Math.max(MIN_DATE, floorLocalHour(S, target.tz));
+  E = Math.min(nowHour(), E);
+  if (S >= target.loadedS && E <= target.loadedE) return false;
+  const ctrl = new AbortController();
+  fetchAbort?.signal.addEventListener('abort', () => ctrl.abort());
+  const get = (a, b) => fetchHourly({ loc: state.loc, keys: Object.keys(target.values), startSec: a, endSec: b, model: target.model, signal: ctrl.signal });
+  try {
+    if (E < target.loadedS || S > target.loadedE) {
+      const next = await get(S, E);
+      if (raw !== target) return false;
+      raw = { ...next, loadedS: S, loadedE: E };
+      return true;
+    }
+    let { times, values } = target;
+    let { loadedS, loadedE } = target;
+    let filled = target.filledHours;
+    if (S < loadedS) {
+      const prev = await get(S, loadedS);
+      times = prev.times.concat(times);
+      values = Object.fromEntries(Object.keys(values).map((k) => [k, prev.values[k].concat(values[k])]));
+      filled += prev.filledHours;
+      loadedS = S;
+    }
+    if (E > loadedE) {
+      const next = await get(loadedE, E);
+      times = times.concat(next.times);
+      values = Object.fromEntries(Object.keys(values).map((k) => [k, values[k].concat(next.values[k])]));
+      filled += next.filledHours;
+      loadedE = E;
+    }
+    if (raw !== target) return false;
+    raw = { ...target, times, values, loadedS, loadedE, filledHours: filled };
+    return true;
+  } catch (e) {
+    if (e.name !== 'AbortError') setStatus(`Could not load more data: ${e.message}`, 'error');
+    return false;
+  }
+}
+
+// Keep the loaded data from growing without bound while browsing: drop what is far outside the axis.
+function trimRaw() {
+  const len = axis.E - axis.S;
+  if (raw.loadedE - raw.loadedS <= 4 * len) return;
+  const S = Math.max(raw.loadedS, axis.S - len), E = Math.min(raw.loadedE, axis.E + len);
+  const idx = [];
+  raw.times.forEach((t, i) => { if (t > S && t <= E) idx.push(i); });
+  raw = { ...raw, times: idx.map((i) => raw.times[i]),
+    values: Object.fromEntries(Object.entries(raw.values).map(([k, v]) => [k, idx.map((i) => v[i])])), loadedS: S, loadedE: E };
+}
+
+async function fillAxis() {
+  const target = raw;
+  if (await queue(() => ensureData(axis.S, axis.E)) && raw && raw !== target) renderResults();
+}
+
+// After a zoom or pan settles: re-centre the axis on the view when the view nears an edge that can
+// still move, or when the view is no longer about a third of the axis.
+let relayoutTimer;
+function scheduleRelayout(delay = 350) { clearTimeout(relayoutTimer); relayoutTimer = setTimeout(relayout, delay); }
+async function relayout() {
+  if (!raw || !zoomWin || !axis) return;
+  if (rangeBar.isDragging()) { scheduleRelayout(); return; }
+  const vS = unwall(zoomWin.startMs), vE = unwall(zoomWin.endMs);
+  const span = vE - vS;
+  const nearLeft = vS - axis.S < span * 0.5 && axis.S > MIN_DATE;
+  const nearRight = axis.E - vE < span * 0.5 && axis.E < nowHour();
+  const ratio = (axis.E - axis.S) / span;
+  if (!nearLeft && !nearRight && ratio > 2 && ratio < 4.5) {
+    // Same axis: only the running totals need to restart at the new left edge (in place, cheap).
+    if (state.vars.some((k) => VAR_BY_KEY[k].kind === 'sum')) renderResults();
+    return;
+  }
+  const want = axisAround(vS, vE);
+  await queue(() => ensureData(want.S, want.E));
+  if (!raw) return;
+  axis = want;
+  trimRaw();
+  renderResults();
+}
+
 function onChartZoom(z) {
   zoomWin = { startMs: z.startMs, endMs: z.endMs };
   setActiveView(null);
-  renderVisibleRange();
   rangeBar.update({ start: z.startMs, end: z.endMs });
-  clearTimeout(edgeTimer);
-  if (!raw || !(z.atLeftEdge || z.atRightEdge)) return;
-  edgeTimer = setTimeout(async () => {
-    const span = (z.endMs - z.startMs) / 1000;
-    if (z.atLeftEdge) loadEarlierTo(raw.loadedS - 3 * span);
-    if (z.atRightEdge) {
-      const E1 = Math.min(floorLocalHour(Date.now() / 1000, raw.tz), raw.loadedE + 3 * span);
-      if (await loadLaterTo(E1, raw.loadedE)) renderResults();
-    }
-  }, 350);
+  scheduleRelayout();
 }
 
-// ---------- "This may be slow" dialog ----------
-// Used before a display predicted to be slow, and when a download is still running after 5 s.
+// ---------- "Taking long" dialog (downloads still running after 5 s) ----------
 
 let choiceToken = 0;
 function showChoice({ title, text, buttons }) {
@@ -570,124 +876,66 @@ function watchSlow(what, cancel) {
   return () => { clearTimeout(t); if (token) closeChoice(token); };
 }
 
-// Extend loaded data back to S1 (unix seconds). Returns true when new data was added.
-async function loadEarlierTo(S1) {
-  if (loadingEarlier || !raw || raw.loadedS <= MIN_DATE) return false;
-  const target = raw;
-  const S0 = target.loadedS;
-  S1 = floorLocalHour(Math.max(MIN_DATE, S1), target.tz);
-  if (S0 - S1 < HOUR) return false;
-  loadingEarlier = true;
-  setStatus('Loading earlier data…', 'loading');
-  const ctrl = new AbortController();
-  fetchAbort?.signal.addEventListener('abort', () => ctrl.abort());
-  const done = watchSlow('Loading earlier data', () => ctrl.abort());
-  try {
-    const prev = await fetchHourly({ loc: state.loc, keys: Object.keys(target.values), startSec: S1, endSec: S0, model: target.model, signal: ctrl.signal }).finally(done);
-    if (raw !== target) return false; // a new search replaced the data meanwhile
-    target.times = prev.times.concat(target.times);
-    for (const k of Object.keys(target.values)) target.values[k] = prev.values[k].concat(target.values[k]);
-    target.filledHours += prev.filledHours;
-    target.loadedS = S1;
-    setStatus('');
-    renderResults();
-    return true;
-  } catch (e) {
-    if (e.name !== 'AbortError') setStatus(`Could not load earlier data: ${e.message}`, 'error');
-    return false;
-  } finally { loadingEarlier = false; }
-}
+// ---------- View buttons ----------
+// Period: the saved period. Up to now: the current visible length, ending now (the saved period is
+// not changed). 1 d…1 y: that length, ending where the chart currently ends.
 
-// Extend loaded data forward to E1 (the "Up to now" view). When the gap after the loaded data
-// is large, only (from, E1] is fetched and a null point breaks the curves across the gap.
-let loadingLater = false;
-async function loadLaterTo(E1, from) {
-  if (loadingLater || !raw) return false;
-  const target = raw;
-  const E0 = target.loadedE;
-  if (E1 - E0 < HOUR) return false;
-  const start = Math.max(E0, floorLocalHour(from, target.tz));
-  loadingLater = true;
-  setStatus('Loading later data…', 'loading');
-  const ctrl = new AbortController();
-  fetchAbort?.signal.addEventListener('abort', () => ctrl.abort());
-  const done = watchSlow('Loading later data', () => ctrl.abort());
-  try {
-    const next = await fetchHourly({ loc: state.loc, keys: Object.keys(target.values), startSec: start, endSec: E1, model: target.model, signal: ctrl.signal }).finally(done);
-    if (raw !== target) return false;
-    if (start - E0 > HOUR && next.times.length) {
-      target.times.push(E0 + HOUR);
-      for (const k of Object.keys(target.values)) target.values[k].push(null);
-    }
-    target.times = target.times.concat(next.times);
-    for (const k of Object.keys(target.values)) target.values[k] = target.values[k].concat(next.values[k]);
-    target.filledHours += next.filledHours;
-    target.loadedE = E1;
-    setStatus('');
-    return true;
-  } catch (e) {
-    if (e.name !== 'AbortError') setStatus(`Could not load recent data: ${e.message}`, 'error');
-    return false;
-  } finally { loadingLater = false; }
-}
-
-// View buttons: the whole period; "now": the current visible length ending now (the saved period is
-// not changed); 1 d…1 m: N hours/days ending where the chart currently ends.
 let activeView = null;
-let lastX = [];
+let lastX = [], lastStart = [], lastEnd = []; // bars of the last render: middle, start, end (wall ms)
 function setActiveView(v) {
   activeView = v;
   document.querySelectorAll('#view-btns button').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
 }
 
-// Number of buckets a view shows: N hours = N hourly bars, or N/24 daily bars (the last day may be partial).
-const viewBuckets = (view) => (state.agg === 'day' ? Math.max(1, Math.round(Number(view) / 24)) : Number(view));
+// Number of bars a view shows for the current time step (the last one may be partial).
+function viewBuckets(view) {
+  const h = Number(view);
+  return { hour: h, day: Math.round(h / 24), month: Math.round(h / 730.5), year: Math.round(h / 8766) }[state.agg] || 1;
+}
 
-// Index of the last bucket whose centre is at or before ms (wall ms).
-function lastIndexAtOrBefore(ms) {
-  for (let i = lastX.length - 1; i >= 0; i--) if (lastX[i] <= ms) return i;
+// Bars that cover the instants just after `from` and just before `to` (wall ms).
+const firstBarAfter = (from) => { const i = lastEnd.findIndex((e) => e > from); return i < 0 ? lastEnd.length - 1 : i; };
+function lastBarBefore(to) {
+  for (let i = lastStart.length - 1; i >= 0; i--) if (lastStart[i] < to) return i;
   return 0;
 }
 
-function viewWindow(view, spanMs, anchorMs) {
-  const step = state.agg === 'day' ? 86400e3 : 3600e3;
-  const dataEnd = lastX[lastX.length - 1] + step / 2;
-  if (view === 'now') return { startMs: dataEnd - spanMs, endMs: dataEnd };
+// Visible window (wall ms) for a view, snapped to whole bars.
+function viewWindow(view, spanSec, anchorMs) {
+  let i0, i1;
   if (view === 'period') {
-    // Buckets of the period: hourly stamps in (S, E], or the days containing them.
-    const dayShift = state.agg === 'day' ? 86400e3 - 3600e3 : 0;
-    const from = wallMs(rawWindow.S, raw.tz) - dayShift;
-    const to = wallMs(rawWindow.E, raw.tz);
-    const first = lastX.find((x) => x > from) ?? lastX[0];
-    const last = [...lastX].reverse().find((x) => x <= to) ?? lastX[lastX.length - 1];
-    return { startMs: first - step / 2, endMs: last + step / 2 };
+    i0 = firstBarAfter(wallMs(rawWindow.S, raw.tz));
+    i1 = lastBarBefore(wallMs(rawWindow.E, raw.tz));
+  } else if (view === 'now') {
+    i1 = lastStart.length - 1;
+    i0 = Math.max(0, i1 - Math.max(1, Math.round((spanSec * 1000) / STEP_MS[state.agg])) + 1);
+  } else {
+    i1 = lastBarBefore(anchorMs);
+    i0 = Math.max(0, i1 - viewBuckets(view) + 1);
   }
-  const iEnd = lastIndexAtOrBefore(anchorMs);
-  const first = lastX[Math.max(0, iEnd - viewBuckets(view) + 1)];
-  return { startMs: first - step / 2, endMs: lastX[iEnd] + step / 2 };
+  return { startMs: lastStart[i0], endMs: lastEnd[i1] };
 }
 
 async function applyView(view) {
   setActiveView(view);
-  const stepSec = state.agg === 'day' ? 86400 : HOUR;
-  const stepMs = stepSec * 1000;
-  let spanMs = 0;
-  // 1 d…1 m keep the end of what the chart shows now; only Period and Up to now move it.
-  const anchorMs = zoomWin ? zoomWin.endMs : (lastX.length ? lastX[lastX.length - 1] + stepMs / 2 : 0);
-  if (view === 'now') {
-    spanMs = zoomWin ? zoomWin.endMs - zoomWin.startMs : (rawWindow.E - rawWindow.S) * 1000 + stepMs;
-    const now = floorLocalHour(Date.now() / 1000, raw.tz);
-    await loadLaterTo(now, now - spanMs / 1000);
-    if (raw.loadedE - spanMs / 1000 < raw.loadedS) await loadEarlierTo(raw.loadedE - spanMs / 1000);
-  } else if (view === 'period') {
-    if (rawWindow.S < raw.loadedS) await loadEarlierTo(rawWindow.S);
+  const stepSec = STEP_MS[state.agg] / 1000;
+  const anchorMs = zoomWin ? zoomWin.endMs : wallMs(rawWindow.E, raw.tz);
+  let S, E, spanSec = 0;
+  if (view === 'period') { S = rawWindow.S; E = rawWindow.E; }
+  else if (view === 'now') {
+    spanSec = zoomWin ? (zoomWin.endMs - zoomWin.startMs) / 1000 : rawWindow.E - rawWindow.S;
+    E = nowHour(); S = E - spanSec;
   } else {
-    const missing = viewBuckets(view) - (lastIndexAtOrBefore(anchorMs) + 1);
-    if (missing > 0) await loadEarlierTo(raw.loadedS - (missing + 1) * stepSec);
+    E = unwall(anchorMs) + stepSec;
+    S = E - (viewBuckets(view) + 1) * stepSec;
   }
-  if (activeView !== view) return; // user moved on meanwhile
-  if (!renderResults()) return; // refreshes lastX for the current time step (false: waiting for the user)
-  zoomWin = viewWindow(view, spanMs, anchorMs);
+  const want = axisAround(S, E);
+  await queue(() => ensureData(want.S, want.E));
+  if (activeView !== view || !raw) return; // the user moved on meanwhile
+  axis = want;
+  trimRaw();
+  renderResults(); // refreshes lastX for the current time step
+  zoomWin = viewWindow(view, spanSec, anchorMs);
   renderResults();
   setActiveView(view);
 }
@@ -696,16 +944,9 @@ document.querySelectorAll('#view-btns button').forEach((b) => {
   b.onclick = () => { if (raw) applyView(b.dataset.view); };
 });
 
-// Data restricted to the selected period (titles ignore earlier data loaded by panning).
-function periodRaw() {
-  const idx = [];
-  raw.times.forEach((t, i) => { if (t > rawWindow.S && t <= rawWindow.E) idx.push(i); });
-  return { ...raw, times: idx.map((i) => raw.times[i]), values: Object.fromEntries(Object.entries(raw.values).map(([k, v]) => [k, idx.map((i) => v[i])])) };
-}
-
 // Which model(s) produced the data, spelled out for "Auto".
 function modelUsedText(keys, S, E) {
-  if (raw.model !== 'best_match') return `Model: ${MODELS.find((m) => m.id === raw.model)?.label}.`;
+  if (period.model !== 'best_match') return `Model: ${MODELS.find((m) => m.id === period.model)?.label}.`;
   const parts = [];
   if (S < IFS_FROM) {
     const groups = { era5: [], land: [], mix: [] };
@@ -717,17 +958,18 @@ function modelUsedText(keys, S, E) {
   }
   if (E > IFS_FROM) parts.push(S < IFS_FROM ? 'then ECMWF IFS 9 km' : 'ECMWF IFS 9 km');
   let t = `Currently used: ${parts.join(', ')}.`;
-  if (raw.filledHours) t += ` Last ${raw.filledHours} h from Open-Meteo forecast.`;
+  if (period.filledHours) t += ` Last ${period.filledHours} h from Open-Meteo forecast.`;
   return t;
 }
 
 function clearResults() {
   raw = null;
+  period = null;
+  axis = null;
   disposeCharts();
   $('charts').innerHTML = '';
   $('rangebar').hidden = true;
   $('model-used').textContent = '';
-  $('source-note').textContent = '';
   $('btn-chart-mode').hidden = true;
   $('btn-fullscreen').hidden = true;
   $('view-btns').hidden = true;
@@ -736,11 +978,19 @@ function clearResults() {
 function fmt(v, unit) { return v == null ? '–' : v.toFixed(decimals(unit)); }
 
 // Whole-period value per variable, shown in each chart title: {agg: 'total'|'mean'|…, value, extra}.
+// Cached: it only changes with the period, the variables or the units, not when the view moves.
+let titlesCache = { period: null, key: '', titles: null };
 function buildTitles(keys) {
-  const pr = periodRaw();
-  const tot = aggregate(pr, keys, 'total', state.units);
-  const hrs = aggregate(pr, keys, 'hour', state.units);
-  const total = pr.times.length;
+  const key = `${keys.join(',')}|${JSON.stringify(state.units)}`;
+  if (titlesCache.period === period && titlesCache.key === key) return titlesCache.titles;
+  const titles = computeTitles(keys);
+  titlesCache = { period, key, titles };
+  return titles;
+}
+function computeTitles(keys) {
+  const tot = aggregate(period, keys, 'total', state.units);
+  const hrs = aggregate(period, keys, 'hour', state.units);
+  const total = period.times.length;
   const titles = {};
   for (const k of keys) {
     const v = VAR_BY_KEY[k];
@@ -759,7 +1009,7 @@ function buildTitles(keys) {
       }
       extra.push(`max ${fmt(top, s.unit)} ${s.unit}/h`);
       if (v.key === 'sunshine_duration') extra.push(`${wet} h with sun`);
-      else if (v.family === 'precip' && v.key !== 'et0_fao_evapotranspiration' || v.family === 'snow') extra.push(`${wet} wet h`);
+      else if ((v.family === 'precip' && v.key !== 'et0_fao_evapotranspiration') || v.family === 'snow') extra.push(`${wet} wet h`);
     } else if (v.kind === 'mean') {
       extra.push(`min ${fmt(s.min[0], s.unit)} · max ${fmt(s.max[0], s.unit)} ${s.unit}`);
     }
@@ -771,51 +1021,11 @@ function buildTitles(keys) {
   return titles;
 }
 
-// Ask before a display that is likely to be slow: more than SLOW_POINTS hourly points, or a
-// predicted drawing time over 5 s. The prediction uses the speed measured on this device
-// (milliseconds per point of previous displays), so a slower phone gets asked sooner.
-const SLOW_POINTS = 8000;
-const SLOW_MS = 5000;
-const SPEED_KEY = 'rain-archive-ms-per-point';
-let msPerPoint = 0.03;
-try { msPerPoint = Number(localStorage.getItem(SPEED_KEY)) || msPerPoint; } catch { /* ignore */ }
-
-function learnSpeed(points, ms) {
-  if (points < 500) return; // too small to measure
-  msPerPoint = 0.6 * msPerPoint + 0.4 * (ms / points);
-  try { localStorage.setItem(SPEED_KEY, String(msPerPoint)); } catch { /* ignore */ }
-}
-
-function confirmSlow(keys, points, predictedMs) {
-  const hourly = state.agg === 'hour';
-  const secs = Math.max(1, Math.round(predictedMs / 1000));
-  const resume = () => { setStatus(''); raw.slowOk = true; if (activeView) applyView(activeView); else renderResults(); };
-  setStatus('Waiting for your choice…');
-  showChoice({
-    title: 'This display may be slow',
-    text: `${hourly ? 'Hourly' : 'Daily'} display of ${fmtDuration(raw.times.length)} for ${keys.length} variable${keys.length > 1 ? 's' : ''}: `
-      + `about ${points.toLocaleString('en')} points, ${secs > 2 ? `roughly ${secs} s to draw on this device` : 'slow to draw and to react'}.`
-      + (hourly ? ' Per day shows the same period with 24× fewer points.' : ' A shorter period or fewer variables would be faster.'),
-    buttons: hourly
-      ? [{ label: 'Show per day', primary: true, run: () => { setStatus(''); setAgg('day'); } },
-        { label: 'Show per hour anyway', run: resume }]
-      : [{ label: 'Show anyway', primary: true, run: resume },
-        { label: 'Cancel', run: () => setStatus('Display cancelled: choose a shorter period or fewer variables.') }],
-  });
-}
-
 function renderResults() {
-  if (!raw) return false;
+  if (!raw || !period) return false;
   const keys = state.vars.filter((k) => k in raw.values);
   if (!keys.length) { clearResults(); return false; }
   if (!raw.times.length) { setStatus('No data returned for this period.', 'error'); return false; }
-  const points = Math.ceil(raw.times.length / (state.agg === 'day' ? 24 : 1)) * keys.length;
-  const predictedMs = points * msPerPoint;
-  if (!raw.slowOk && ((state.agg === 'hour' && points > SLOW_POINTS) || predictedMs > SLOW_MS)) {
-    confirmSlow(keys, points, predictedMs);
-    return false;
-  }
-  const t0 = performance.now();
   const titles = buildTitles(keys);
 
   $('view-btns').hidden = false;
@@ -826,35 +1036,26 @@ function renderResults() {
   modeBtn.setAttribute('aria-pressed', combined);
   modeBtn.title = combined ? 'Separate charts' : 'Combine charts';
   modeBtn.setAttribute('aria-label', modeBtn.title);
-  if (typeof echarts === 'undefined') setStatus('Chart library could not be loaded (offline?).', 'error');
-  else {
-    const agg = aggregate(raw, keys, state.agg, state.units);
-    lastX = agg.x;
-    renderCharts($('charts'), agg, keys, state.agg, keys.length < 2 ? 'stacked' : state.chartMode,
-      { zoom: zoomWin, onZoom: onChartZoom, titles });
-    learnSpeed(agg.x.length * keys.length, performance.now() - t0);
-    // Time bar: whole loaded range, visible window, and the first variable's profile.
-    $('rangebar').hidden = false;
-    lastShadow = agg.x.map((x, i) => [x, agg.series[keys[0]].val[i]]);
-    rangeBar.update({ ...chartRange, start: zoomWin ? zoomWin.startMs : chartRange.min, end: zoomWin ? zoomWin.endMs : chartRange.max, shadow: lastShadow });
+  if (typeof echarts === 'undefined') { setStatus('Chart library could not be loaded (offline?).', 'error'); return false; }
+
+  const agg = aggregate(raw, keys, state.agg, state.units, zoomWin ? zoomWin.startMs - 1 : -Infinity);
+  lastX = agg.x; lastStart = agg.start; lastEnd = agg.end;
+  // Axis range widened to whole bars, so the first and last bars are never cut in half.
+  let range;
+  if (axis) {
+    const a = wallMs(axis.S, raw.tz), b = wallMs(axis.E, raw.tz);
+    range = { min: Math.min(a, lastStart[firstBarAfter(a)]), max: Math.max(b, lastEnd[lastBarBefore(b)]) };
   }
+  renderCharts($('charts'), agg, keys, state.agg, keys.length < 2 ? 'stacked' : state.chartMode,
+    { range, zoom: zoomWin, onZoom: onChartZoom, titles });
+  // Time bar: the axis range, the visible window, and the first variable's profile.
+  $('rangebar').hidden = false;
+  lastShadow = agg.x.map((x, i) => [x, agg.series[keys[0]].val[i]]);
+  rangeBar.update({ ...chartRange, start: zoomWin ? zoomWin.startMs : chartRange.min, end: zoomWin ? zoomWin.endMs : chartRange.max,
+    shadow: lastShadow, unit: state.agg });
 
-  $('model-used').textContent = modelUsedText(keys, raw.loadedS, rawWindow.E);
-  renderVisibleRange();
+  $('model-used').textContent = modelUsedText(keys, rawWindow.S, rawWindow.E);
   return true;
-}
-
-// "From … to …" of what the chart currently shows (follows zoom and pan).
-function renderVisibleRange() {
-  if (!lastX.length) { $('source-note').textContent = ''; return; }
-  const day = state.agg === 'day';
-  const startMs = zoomWin ? zoomWin.startMs : -Infinity, endMs = zoomWin ? zoomWin.endMs : Infinity;
-  const shown = lastX.filter((x) => x >= startMs && x <= endMs);
-  if (!shown.length) { $('source-note').textContent = ''; return; }
-  // An hourly bar stamped hh:00 covers the hour before it.
-  const from = day ? fmtWall(shown[0], false) : fmtWall(shown[0] - 3600e3);
-  const to = day ? fmtWall(shown[shown.length - 1], false) : fmtWall(shown[shown.length - 1]);
-  $('source-note').textContent = `From ${from} to ${to}`;
 }
 
 $('btn-refresh').onclick = () => { syncPeriodUI(); scheduleFetch(0); };
@@ -872,16 +1073,16 @@ document.addEventListener('fullscreenchange', () => {
   const on = !!document.fullscreenElement;
   $('btn-fullscreen').title = on ? 'Exit full screen' : 'Full screen';
   $('btn-fullscreen').setAttribute('aria-pressed', on);
-  setTimeout(resizeCharts, 120);
+  setTimeout(() => { resizeCharts(); rangeBar.update({ redraw: true }); }, 120);
 });
 
-const rangeBar = createRangeBar($('rangebar'), { onChange: setZoom, minSpan: 3 * 3600e3 });
+const rangeBar = createRangeBar($('rangebar'), { onChange: setZoom, onEnd: () => scheduleRelayout(0), minSpan: 3 * 3600e3 });
 let lastShadow = null;
 
 let resizeTimer;
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => { resizeCharts(); if (lastShadow) rangeBar.update({ shadow: lastShadow }); }, 150);
+  resizeTimer = setTimeout(() => { resizeCharts(); rangeBar.update({ redraw: true }); }, 150);
 });
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => renderResults());
 
@@ -896,7 +1097,6 @@ renderVars();
 renderUnits();
 renderModels();
 updateTabs();
-if (!state.loc) openPanel('card-location');
 scheduleFetch(0);
 
 if ('serviceWorker' in navigator) {
