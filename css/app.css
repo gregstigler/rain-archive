@@ -9,6 +9,7 @@
   --accent-soft: #e5effb;
   --danger: #c0392b;
   --chart-grid: #e6eaf0;
+  --chart-major: #6b7584;
   --radius: 12px;
   color-scheme: light;
 }
@@ -24,6 +25,7 @@
     --accent-soft: #1e2d42;
     --danger: #ff7a6b;
     --chart-grid: #29323f;
+    --chart-major: #8d99aa;
     color-scheme: dark;
   }
 }
@@ -38,6 +40,7 @@
   --accent-soft: #1e2d42;
   --danger: #ff7a6b;
   --chart-grid: #29323f;
+    --chart-major: #8d99aa;
   color-scheme: dark;
 }
 

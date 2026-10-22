@@ -1,22 +1,22 @@
 import {
   VARS, VAR_BY_KEY, QUICK_VARS, FAMILIES, MODELS, IFS_FROM, pre2017Source, defaultUnits, decimals, wmoLabel, compass,
-} from './vars.js?v=19';
+} from './vars.js?v=20';
 import {
   HOUR, STEP_MS, STEPS, bucketBounds, searchPlaces, resolvePoint, getElevation, fetchHourly, aggregate,
   zonedToUnix, unixToZonedInput, floorLocalHour, wallMs, tzOffset, fmtWall, fmtDuration,
   DURATION_UNITS, subtractDuration, bestDuration,
-} from './data.js?v=19';
-import { renderCharts, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=19';
-import { createRangeBar } from './rangebar.js?v=19';
+} from './data.js?v=20';
+import { renderCharts, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=20';
+import { createRangeBar } from './rangebar.js?v=20';
 
 const $ = (id) => document.getElementById(id);
 
 // Date + time pickers of the Period panel: a date field (required, so browsers show no "Clear"
-// button) and a time list in 15-minute steps. The wrapper element behaves like one input:
+// button) and a time list in 30-minute steps. The wrapper element behaves like one input:
 // .value is "YYYY-MM-DDTHH:mm", .disabled, and a single 'change' event.
 document.querySelectorAll('.dt').forEach((el) => {
   const [date, time] = el.children;
-  for (let m = 0; m < 24 * 60; m += 15) {
+  for (let m = 0; m < 24 * 60; m += 30) {
     const v = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
     time.add(new Option(v, v));
   }
@@ -28,7 +28,7 @@ document.querySelectorAll('.dt').forEach((el) => {
       const [d, t = '00:00'] = last.split('T');
       date.value = d || '';
       const [h, mi] = t.split(':').map(Number);
-      const q = Math.floor((mi || 0) / 15) * 15; // snap to 00/15/30/45
+      const q = Math.floor((mi || 0) / 30) * 30; // snap to :00 / :30
       time.value = `${String(h || 0).padStart(2, '0')}:${String(q).padStart(2, '0')}`;
     },
   });
@@ -1084,12 +1084,9 @@ function renderResults() {
   const cumFrom = zoomWin ? bucketBounds(zoomWin.startMs + 1, state.agg)[0] : -Infinity;
   const agg = aggregate(raw, keys, state.agg, state.units, cumFrom);
   lastX = agg.x; lastStart = agg.start; lastEnd = agg.end;
-  // Axis range widened to whole bars, so the first and last bars are never cut in half.
-  let range;
-  if (axis) {
-    const a = wallMs(axis.S, raw.tz), b = wallMs(axis.E, raw.tz);
-    range = { min: Math.min(a, lastStart[firstBarAfter(a)]), max: Math.max(b, lastEnd[lastBarBefore(b)]) };
-  }
+  // The axis keeps its time range whatever the aggregation: wide bars at its ends are simply cut.
+  // (Only the data behind them is loaded whole, so their values are complete.)
+  const range = axis ? { min: wallMs(axis.S, raw.tz), max: wallMs(axis.E, raw.tz) } : undefined;
   renderCharts($('charts'), agg, keys, state.agg, keys.length < 2 ? 'stacked' : state.chartMode,
     { range, zoom: zoomWin, onZoom: onChartZoom, titles });
   // Time bar: the axis range, the visible window, and the first variable's profile.
