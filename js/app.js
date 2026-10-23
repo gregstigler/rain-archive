@@ -1,13 +1,13 @@
 import {
   VARS, VAR_BY_KEY, QUICK_VARS, FAMILIES, MODELS, IFS_FROM, pre2017Source, defaultUnits, decimals, wmoLabel, compass,
-} from './vars.js?v=32';
+} from './vars.js?v=35';
 import {
   HOUR, STEP_MS, STEPS, bucketBounds, searchPlaces, resolvePoint, getElevation, fetchHourly, aggregate,
   zonedToUnix, unixToZonedInput, floorLocalHour, wallMs, tzOffset, fmtWall, fmtDuration,
   DURATION_UNITS, subtractDuration, bestDuration,
-} from './data.js?v=32';
-import { renderCharts, renderEmpty, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=32';
-import { createRangeBar } from './rangebar.js?v=32';
+} from './data.js?v=35';
+import { renderCharts, renderEmpty, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=35';
+import { createRangeBar } from './rangebar.js?v=35';
 
 const $ = (id) => document.getElementById(id);
 
@@ -136,8 +136,11 @@ function updateTabs() {
 
 // ---------- Location ----------
 
+let keepViewOnce = false; // next fetch keeps the displayed time window (see doFetch)
+
 function setLocation(loc) {
   state.loc = loc;
+  keepViewOnce = true;
   save();
   renderLocation();
   renderPeriodSummary();
@@ -159,21 +162,46 @@ function renderLocation() {
   if (loc.region) box.append(`, ${loc.region}`);
   const sub = document.createElement('div');
   sub.className = 'small';
-  const coords = `${loc.lat.toFixed(4)}, ${loc.lon.toFixed(4)}`;
   const copy = document.createElement('button');
   copy.type = 'button';
   copy.className = 'btn mini';
   copy.textContent = 'Copy';
   copy.title = 'Copy coordinates';
-  copy.onclick = async () => {
-    try { await navigator.clipboard.writeText(coords); copy.textContent = '✓ Copied'; }
-    catch { copy.textContent = 'Failed'; }
-    setTimeout(() => { copy.textContent = 'Copy'; }, 1500);
-  };
+  copy.onclick = () => copyCoords(loc.lat, loc.lon);
   sub.append(`${loc.lat.toFixed(3)}°, ${loc.lon.toFixed(3)}°`, copy,
     (loc.elevation != null ? ` · ${Math.round(loc.elevation)} m` : '') + ` · ${loc.tz}`);
   box.append(sub);
   renderFavorites();
+}
+
+// Short message at the bottom of the screen (visible above panels and dialogs).
+let toastTimer;
+function toast(msg) {
+  const t = $('toast');
+  (document.querySelector('dialog[open]') || document.body).append(t); // above an open dialog too
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, 2200);
+}
+
+// Copy "lat, lon" (4 decimals) to the clipboard.
+async function copyCoords(lat, lon) {
+  const txt = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+  let ok = false;
+  try { await navigator.clipboard.writeText(txt); ok = true; } catch { /* try the older way */ }
+  if (!ok) {
+    // Fallback for browsers that refuse the Clipboard API: copy from a hidden text field.
+    const ta = document.createElement('textarea');
+    ta.value = txt;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;opacity:0;left:0;top:0';
+    (document.querySelector('dialog[open]') || document.body).append(ta);
+    ta.select();
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove();
+  }
+  toast(ok ? `Coordinates copied: ${txt}` : 'Could not copy the coordinates');
 }
 
 const sameLoc = (a, b) => a && b && Math.abs(a.lat - b.lat) < 1e-3 && Math.abs(a.lon - b.lon) < 1e-3;
@@ -187,8 +215,8 @@ function setFavorites(list) {
 }
 
 // ---------- Favorites ----------
-// Tap: show that place. Long press: menu (rename, move on map, edit coordinates, delete).
-// Press and drag onto another favorite: reorder.
+// Tap: show that place. ✕: remove it. Long press: menu (rename, move on map, edit or copy
+// coordinates, delete). Press and drag onto another favorite: reorder.
 
 const LONG_PRESS_MS = 500;
 
@@ -196,22 +224,32 @@ function renderFavorites() {
   const box = $('favorites');
   box.innerHTML = '';
   state.favorites.forEach((f, i) => {
-    const chip = document.createElement('button');
-    chip.type = 'button';
+    const chip = document.createElement('span');
     chip.className = 'chip fav' + (sameLoc(f, state.loc) ? ' active' : '');
-    chip.textContent = `★ ${f.name}`;
-    chip.title = 'Tap: show · Long press: options · Drag: reorder';
     chip.dataset.i = i;
-    attachChipGestures(chip, f);
+    const main = document.createElement('button');
+    main.type = 'button';
+    main.className = 'fav-main';
+    main.textContent = `★ ${f.name}`;
+    main.title = 'Tap: show · Long press: options · Drag: reorder';
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'fav-del';
+    del.textContent = '✕';
+    del.title = `Remove ${f.name} from favorites`;
+    del.setAttribute('aria-label', del.title);
+    del.onclick = () => setFavorites(state.favorites.filter((x) => x !== f));
+    chip.append(main, del);
+    attachChipGestures(chip, main, f);
     box.append(chip);
   });
 }
 
-function attachChipGestures(chip, fav) {
+function attachChipGestures(chip, main, fav) {
   let g = null;
-  chip.addEventListener('pointerdown', (e) => {
+  main.addEventListener('pointerdown', (e) => {
     if (e.button > 0) return;
-    try { chip.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+    try { main.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
     g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, moved: false, long: false, over: null };
     g.timer = setTimeout(() => {
       if (!g || g.moved) return;
@@ -220,7 +258,7 @@ function attachChipGestures(chip, fav) {
       openFavMenu(chip, fav);
     }, LONG_PRESS_MS);
   });
-  chip.addEventListener('pointermove', (e) => {
+  main.addEventListener('pointermove', (e) => {
     if (!g || e.pointerId !== g.id || g.long) return;
     const dx = e.clientX - g.x0, dy = e.clientY - g.y0;
     if (!g.moved && Math.hypot(dx, dy) < 8) return;
@@ -251,10 +289,10 @@ function attachChipGestures(chip, fav) {
     }
     if (e.type === 'pointerup') setLocation(fav);
   };
-  chip.addEventListener('pointerup', end);
-  chip.addEventListener('pointercancel', end);
-  chip.addEventListener('contextmenu', (e) => e.preventDefault());
-  chip.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setLocation(fav); } });
+  main.addEventListener('pointerup', end);
+  main.addEventListener('pointercancel', end);
+  main.addEventListener('contextmenu', (e) => e.preventDefault());
+  main.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setLocation(fav); } });
 }
 
 function closeFavMenu() { $('fav-menu')?.remove(); }
@@ -268,6 +306,7 @@ function openFavMenu(chip, fav) {
     ['Rename', () => editFav(fav, 'rename')],
     ['Move on map', () => openMap({ moveFav: fav })],
     ['Edit coordinates', () => editFav(fav, 'coords')],
+    ['Copy coordinates', () => copyCoords(fav.lat, fav.lon)],
     ['Delete', () => setFavorites(state.favorites.filter((x) => x !== fav))],
   ];
   for (const [label, run] of items) {
@@ -371,11 +410,35 @@ async function runSearch(q) {
       b.firstChild.textContent = p.name;
       b.lastChild.textContent = [p.region, p.elevation != null ? `${Math.round(p.elevation)} m` : ''].filter(Boolean).join(' · ');
       b.onclick = () => { results.hidden = true; $('search').value = ''; setLocation(p); };
+      b.className = 'res-main';
       b.onkeydown = (e) => {
         if (e.key === 'ArrowDown') { e.preventDefault(); li.nextElementSibling?.querySelector('button')?.focus(); }
         if (e.key === 'ArrowUp') { e.preventDefault(); (li.previousElementSibling?.querySelector('button') || $('search')).focus(); }
       };
-      li.append(b);
+      // Add to favorites / copy coordinates, without choosing the place yet.
+      const star = document.createElement('button');
+      star.type = 'button';
+      star.className = 'res-act star-btn';
+      const syncStar = () => {
+        const on = isFavorite(p);
+        star.textContent = on ? '★' : '☆';
+        star.classList.toggle('on', on);
+        star.title = on ? 'Remove from favorites' : 'Add to favorites';
+        star.setAttribute('aria-label', star.title);
+      };
+      syncStar();
+      star.onclick = () => {
+        setFavorites(isFavorite(p) ? state.favorites.filter((f) => !sameLoc(f, p)) : [...state.favorites, { ...p }]);
+        syncStar();
+      };
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'res-act';
+      copy.title = 'Copy coordinates';
+      copy.setAttribute('aria-label', copy.title);
+      copy.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg>';
+      copy.onclick = () => copyCoords(p.lat, p.lon);
+      li.append(b, star, copy);
       results.append(li);
     }
     results.hidden = false;
@@ -425,7 +488,9 @@ function updateStar() {
   star.textContent = fav ? '★' : '☆';
   star.classList.toggle('on', !!fav);
   star.title = fav ? `Remove ${fav.name} from favorites` : 'Add this point to favorites';
+  $('map-copy').disabled = !picked;
 }
+$('map-copy').onclick = () => { if (picked) copyCoords(picked.lat, picked.lon); };
 
 let elevAbort;
 async function pickPoint(lat, lon) {
@@ -615,7 +680,8 @@ function checkbox(v) {
     renderVars(); // selected variables move to the top list, unselected ones go back to "Other"
     renderUnits();
     // Already-fetched variables only need a re-render; new ones need a fetch.
-    if (raw && state.vars.every((k) => k in raw.values)) renderResults(); else scheduleFetch();
+    if (raw && state.vars.every((k) => k in raw.values)) renderResults();
+    else { keepViewOnce = true; scheduleFetch(); }
   };
   label.append(cb, document.createTextNode(v.label));
   label.dataset.search = `${v.label} ${v.key} ${v.cat}`.toLowerCase();
@@ -713,7 +779,7 @@ function renderModels() {
   MODELS.forEach((m) => sel.add(new Option(m.label, m.id, false, m.id === state.model)));
   const note = () => { $('model-note').textContent = MODELS.find((m) => m.id === state.model)?.note || ''; };
   note();
-  sel.onchange = () => { state.model = sel.value; save(); note(); scheduleFetch(0); };
+  sel.onchange = () => { state.model = sel.value; save(); note(); keepViewOnce = true; scheduleFetch(0); };
 }
 
 // ---------- Data model ----------
@@ -774,6 +840,10 @@ async function doFetch() {
   fetchAbort?.abort();
   fetchAbort = new AbortController();
   const ctrl = fetchAbort;
+  // A new place, variable or model keeps the displayed window (same wall-clock times);
+  // only a new period re-centres the view on it.
+  const keep = keepViewOnce && zoomWin ? { win: { ...zoomWin }, view: activeView } : null;
+  keepViewOnce = false;
   setStatus('Loading data…', 'loading');
   const done = watchSlow('Loading the data', () => ctrl.abort());
   try {
@@ -782,14 +852,25 @@ async function doFetch() {
     period = p;
     raw = { ...p, loadedS: w.S, loadedE: w.E };
     rawWindow = w;
+    setStatus('');
+    if (keep) {
+      axis = axisAround(unwall(keep.win.startMs), unwall(keep.win.endMs));
+      zoomWin = keep.win;
+      await queue(() => ensureData(wholeBars(axis))); // the window may lie outside the period
+      if (raw.tz !== p.tz || period !== p) return; // replaced meanwhile
+      renderResults();
+      setActiveView(keep.view);
+      refreshScales();
+      return;
+    }
     axis = axisAround(w.S, w.E);
     zoomWin = null;
-    setStatus('');
     renderResults();
     zoomWin = viewWindow('period');
     renderResults();
     setActiveView('period');
     fillAxis(); // the margins, in the background
+    refreshScales();
   } catch (e) {
     done();
     if (e.name === 'AbortError') return;
@@ -847,6 +928,85 @@ async function ensureData({ S, E }) {
   }
 }
 
+// ---------- Stable y scales ----------
+// To compare views by eye, each variable's y axis is fixed by a reference: the 90th percentile of
+// its values (bars at the current aggregation level) over the saved period plus one year before and
+// one year after (never beyond now). For averaged variables the 10th percentile sets the bottom.
+// For sums (rain, snow…) only non-zero bars count, otherwise the many dry hours would pull the
+// percentile to 0. The axis only stretches beyond that when a higher (or lower) value is actually
+// on screen, once the view has stopped moving.
+
+const YEAR = 365.2425 * 86400;
+let ref = { key: '', data: null, stats: null, statsKey: '' };
+
+async function refreshScales() {
+  if (!state.loc || !rawWindow || !state.vars.length) return;
+  const S = Math.max(MIN_DATE, rawWindow.S - YEAR), E = Math.min(nowHour(), rawWindow.E + YEAR);
+  const keys = [...state.vars].sort();
+  const key = [state.loc.lat, state.loc.lon, state.model, keys.join(','), Math.round(S / 86400), Math.round(E / 86400)].join('|');
+  if (ref.key === key) return;
+  ref = { key, data: null, stats: null, statsKey: '' };
+  try {
+    const data = await fetchHourly({ loc: state.loc, keys, startSec: floorLocalHour(S, tz()), endSec: E, model: state.model, signal: fetchAbort?.signal });
+    if (ref.key !== key) return; // superseded
+    ref.data = data;
+    renderResults();
+  } catch { /* no reference: axes stay automatic */ }
+}
+
+function percentile(sorted, q) { return sorted.length ? sorted[Math.floor(q * (sorted.length - 1))] : null; }
+
+// {key: {lo, hi}} from the reference data, for the current aggregation level and units.
+function refStats(keys) {
+  if (!ref.data) return null;
+  const sk = `${state.agg}|${JSON.stringify(state.units)}`;
+  if (ref.statsKey === sk && ref.stats) return ref.stats;
+  const usable = keys.filter((k) => k in ref.data.values);
+  const agg = aggregate(ref.data, usable, state.agg, state.units);
+  const stats = {};
+  for (const k of usable) {
+    const v = VAR_BY_KEY[k], s = agg.series[k];
+    if (v.kind === 'dir' || v.kind === 'code') continue;
+    const banded = v.kind === 'mean' && state.agg !== 'hour';
+    const highs = (banded ? s.max : s.val).filter((x) => x != null && (v.kind !== 'sum' || x > 0)).sort((a, b) => a - b);
+    const lows = (banded ? s.min : s.val).filter((x) => x != null).sort((a, b) => a - b);
+    stats[k] = { hi: percentile(highs, 0.9), lo: v.kind === 'sum' ? 0 : percentile(lows, 0.1) };
+  }
+  ref.stats = stats;
+  ref.statsKey = sk;
+  return stats;
+}
+
+// Round a [lo, hi] range outwards to tidy values (steps of 1, 2, 2.5 or 5 × 10ⁿ).
+function niceRange(lo, hi) {
+  const span = Math.max(hi - lo, Math.abs(hi) * 1e-3, 1e-6);
+  const raw5 = span / 5, mag = 10 ** Math.floor(Math.log10(raw5));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw5);
+  return { min: Math.floor(lo / step) * step, max: Math.ceil(hi / step) * step };
+}
+
+// y range per variable for the current view: the reference, widened only by values on screen.
+function yScales(keys, agg) {
+  const st = refStats(keys);
+  if (!st) return null;
+  const s0 = zoomWin ? zoomWin.startMs : -Infinity, e0 = zoomWin ? zoomWin.endMs : Infinity;
+  const out = {};
+  for (const k of keys) {
+    if (!st[k] || st[k].hi == null) continue;
+    const v = VAR_BY_KEY[k], s = agg.series[k];
+    const banded = v.kind === 'mean' && state.agg !== 'hour';
+    let hi = st[k].hi, lo = st[k].lo;
+    agg.start.forEach((b, i) => {
+      if (agg.end[i] <= s0 || b >= e0) return;
+      const top = banded ? s.max[i] : s.val[i], bottom = banded ? s.min[i] : s.val[i];
+      if (top != null && top > hi) hi = top;
+      if (v.kind !== 'sum' && bottom != null && bottom < lo) lo = bottom;
+    });
+    out[k] = v.kind === 'sum' ? { min: 0, max: niceRange(0, hi).max } : niceRange(lo, hi);
+  }
+  return out;
+}
+
 // Keep the loaded data from growing without bound while browsing: drop what is far outside the axis.
 function trimRaw() {
   const len = axis.E - axis.S;
@@ -877,8 +1037,9 @@ async function relayout() {
   const nearRight = axis.E - vE < span * 0.5 && axis.E < nowHour();
   const ratio = (axis.E - axis.S) / span;
   if (!nearLeft && !nearRight && ratio > 2 && ratio < 4.5) {
-    // Same axis: only the running totals need to restart at the new left edge (in place, cheap).
-    if (state.vars.some((k) => VAR_BY_KEY[k].kind === 'sum')) renderResults();
+    // Same axis: running totals restart at the new left edge and the y scales check what is now
+    // on screen (in place, cheap).
+    renderResults();
     return;
   }
   const want = axisAround(vS, vE);
@@ -1251,7 +1412,7 @@ function renderResults() {
   // (Only the data behind them is loaded whole, so their values are complete.)
   const range = axis ? { min: wallMs(axis.S, raw.tz), max: wallMs(axis.E, raw.tz) } : undefined;
   renderCharts($('charts'), agg, keys, state.agg, keys.length < 2 ? 'stacked' : state.chartMode,
-    { range, zoom: zoomWin, onZoom: onChartZoom, titles });
+    { range, zoom: zoomWin, onZoom: onChartZoom, titles, yScale: yScales(keys, agg) });
   // Time bar: the axis range, the visible window, and the first variable's profile.
   $('rangebar').hidden = false;
   lastShadow = agg.x.map((x, i) => [x, agg.series[keys[0]].val[i]]);

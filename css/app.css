@@ -134,7 +134,12 @@ input:disabled { opacity: .55; }
   background: var(--card); border: 1px solid var(--line); border-radius: 8px;
   max-height: 300px; overflow: auto;
 }
+.results li { display: flex; align-items: center; gap: 2px; }
 .results button { width: 100%; text-align: left; padding: 8px; border: 0; background: none; border-radius: 6px; cursor: pointer; }
+.results button.res-act { width: 34px; flex: 0 0 34px; height: 34px; padding: 0; display: grid; place-items: center; text-align: center; color: var(--muted); font-size: 18px; }
+.results button.res-act svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; }
+.results button.star-btn.on { color: #e0a800; }
+.results button.res-main { flex: 1 1 auto; min-width: 0; }
 .results button:hover, .results button:focus { background: var(--accent-soft); outline: none; }
 .results .sub { display: block; font-size: 12px; color: var(--muted); }
 
@@ -243,7 +248,14 @@ details.sub > summary { font-weight: 400; }
 .menu button { text-align: left; padding: 9px 10px; border: 0; background: none; border-radius: 6px; cursor: pointer; font: inherit; color: inherit; }
 .menu button:hover, .menu button:focus { background: var(--accent-soft); outline: none; }
 .menu button.danger { color: var(--danger); }
-.chip.fav { padding: 5px 11px; cursor: pointer; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.chip.fav { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.chip.fav .fav-main { touch-action: none; padding: 5px 4px 5px 11px; }
+.chip.fav .fav-del { padding: 5px 9px 5px 5px; }
+.toast {
+  position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 2000;
+  max-width: 92vw; padding: 8px 14px; border-radius: 999px; background: var(--text); color: var(--bg);
+  font-size: 13px; box-shadow: 0 6px 18px rgba(0, 0, 0, .25); pointer-events: none;
+}
 .chip.dragging { opacity: .75; z-index: 5; position: relative; box-shadow: 0 6px 16px rgba(0, 0, 0, .2); }
 .chip.drop { border-color: var(--accent); border-style: dashed; }
 

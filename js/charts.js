@@ -1,7 +1,7 @@
 // ECharts rendering: one synced chart per variable ("stacked") or a single multi-axis chart ("combined").
 // When only the data or the time range changes, existing charts are updated in place (no flicker).
-import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=32';
-import { fmtWall, STEP_MS } from './data.js?v=32';
+import { VAR_BY_KEY, decimals, wmoLabel, compass } from './vars.js?v=35';
+import { fmtWall, STEP_MS } from './data.js?v=35';
 
 const PALETTE = ['#2f7fd8', '#e8743b', '#19a979', '#945ecf', '#d4526e', '#13a4b4', '#ce8f1f', '#6b7a8f'];
 const GROUP = 'rain-archive';
@@ -327,6 +327,16 @@ function yAxis(name, unitKind, theme, position, offset, showGrid, gap) {
   return ax;
 }
 
+// Fixed y range (from the app's reference percentiles), or back to automatic when there is none.
+// null is passed explicitly so that an in-place update also clears a previous fixed range.
+function applyScale(ax, kind, sc) {
+  if (kind === 'dir') return ax;
+  ax.min = sc ? sc.min : (kind === 'sum' ? 0 : null);
+  ax.max = sc ? sc.max : null;
+  if (sc) ax.scale = false;
+  return ax;
+}
+
 function baseOption(gran, theme, tooltipFmt, gridRight, gridLeft, zoom) {
   const step = STEP_MS[gran];
   const { min, max } = chartRange;
@@ -466,10 +476,17 @@ export function renderCharts(container, agg, keys, gran, mode, opts = {}) {
       const main = axisIdx(`${v.kind === 'dir' ? 'dir' : unitName}`, unitName, v.kind, color(k));
       const cum = s.cum ? axisIdx(`${unitName}-cum`, `Σ ${unitName}`, 'sum', theme.muted) : 0;
       all.push(...seriesFor(k, s, x, gran, color(k), { main, cum }, theme));
+      // Variables sharing a unit share an axis: its fixed range must hold all of them.
+      const sc = opts.yScale?.[k];
+      if (sc && v.kind !== 'dir') {
+        const ax = axes[main];
+        ax.fixed = ax.fixed ? { min: Math.min(ax.fixed.min, sc.min), max: Math.max(ax.fixed.max, sc.max) } : { ...sc };
+        ax.kind = v.kind;
+      }
     }
     const lefts = Math.ceil(axes.length / 2), rights = Math.floor(axes.length / 2);
     const opt = baseOption(gran, theme, makeTooltip(keys), 8 + Math.max(rights, 1) * AX_W, 8 + lefts * AX_W, zoom);
-    opt.yAxis = axes.map(({ id, ...a }) => a);
+    opt.yAxis = axes.map(({ id, fixed, kind, ...a }) => (kind ? applyScale(a, kind, fixed) : a));
     opt.series = all; // no legend: the coloured titles above the chart play that role
     charts.push({ opt, cls: 'chart combined' });
   } else {
@@ -478,6 +495,7 @@ export function renderCharts(container, agg, keys, gran, mode, opts = {}) {
       const s = series[k];
       const unitName = v.kind === 'code' ? 'WMO' : s.unit;
       const yAxes = [yAxis(unitName, v.kind, theme, 'left', 0, true, 36)];
+      applyScale(yAxes[0], v.kind, opts.yScale?.[k]);
       if (s.cum) yAxes.push(yAxis(`Σ ${s.unit}`, 'sum', theme, 'right', 0, false, 36));
       const opt = baseOption(gran, theme, makeTooltip([k]), 56, 56, zoom);
       opt.yAxis = yAxes;
