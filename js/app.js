@@ -1,13 +1,13 @@
 import {
   VARS, VAR_BY_KEY, QUICK_VARS, FAMILIES, MODELS, IFS_FROM, pre2017Source, defaultUnits, decimals, wmoLabel, compass,
-} from './vars.js?v=35';
+} from './vars.js?v=36';
 import {
   HOUR, STEP_MS, STEPS, bucketBounds, searchPlaces, resolvePoint, getElevation, fetchHourly, aggregate,
   zonedToUnix, unixToZonedInput, floorLocalHour, wallMs, tzOffset, fmtWall, fmtDuration,
   DURATION_UNITS, subtractDuration, bestDuration,
-} from './data.js?v=35';
-import { renderCharts, renderEmpty, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=35';
-import { createRangeBar } from './rangebar.js?v=35';
+} from './data.js?v=36';
+import { renderCharts, renderEmpty, disposeCharts, resizeCharts, setZoom, chartRange } from './charts.js?v=36';
+import { createRangeBar } from './rangebar.js?v=36';
 
 const $ = (id) => document.getElementById(id);
 
@@ -929,13 +929,14 @@ async function ensureData({ S, E }) {
 }
 
 // ---------- Stable y scales ----------
-// To compare views by eye, each variable's y axis is fixed by a reference: the 90th percentile of
+// To compare views by eye, each variable's y axis is fixed by a reference: the 97th percentile of
 // its values (bars at the current aggregation level) over the saved period plus one year before and
-// one year after (never beyond now). For averaged variables the 10th percentile sets the bottom.
+// one year after (never beyond now). For averaged variables the 3rd percentile sets the bottom.
 // For sums (rain, snow…) only non-zero bars count, otherwise the many dry hours would pull the
 // percentile to 0. The axis only stretches beyond that when a higher (or lower) value is actually
 // on screen, once the view has stopped moving.
 
+const REF_HI = 0.97;
 const YEAR = 365.2425 * 86400;
 let ref = { key: '', data: null, stats: null, statsKey: '' };
 
@@ -970,7 +971,7 @@ function refStats(keys) {
     const banded = v.kind === 'mean' && state.agg !== 'hour';
     const highs = (banded ? s.max : s.val).filter((x) => x != null && (v.kind !== 'sum' || x > 0)).sort((a, b) => a - b);
     const lows = (banded ? s.min : s.val).filter((x) => x != null).sort((a, b) => a - b);
-    stats[k] = { hi: percentile(highs, 0.9), lo: v.kind === 'sum' ? 0 : percentile(lows, 0.1) };
+    stats[k] = { hi: percentile(highs, REF_HI), lo: v.kind === 'sum' ? 0 : percentile(lows, 1 - REF_HI) };
   }
   ref.stats = stats;
   ref.statsKey = sk;
